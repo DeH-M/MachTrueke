@@ -2,7 +2,7 @@ name: CI - MachTrueke
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, feature/** ]
   pull_request:
     branches: [ main, develop ]
 
@@ -21,11 +21,10 @@ jobs:
         run: |
           cd backend
           python -m pip install --upgrade pip
-          # si aún no tienes archivo, esto no truena
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; else echo "No requirements.txt"; fi
 
       - name: Lint/Test placeholder
-        run: echo "No tests yet - OK"
+        run: echo "Backend OK (sin tests aún)"
 
   frontend:
     name: Frontend (Vite)
