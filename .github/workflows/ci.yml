@@ -1,8 +1,48 @@
-name: CI smoke test
-on: [push, pull_request]
+name: CI - MachTrueke
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
 jobs:
-  hello:
+  backend:
+    name: Backend (FastAPI)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: echo "Workflow OK ✅"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend deps
+        run: |
+          cd backend
+          python -m pip install --upgrade pip
+          # si aún no tienes archivo, esto no truena
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Lint/Test placeholder
+        run: echo "No tests yet - OK"
+
+  frontend:
+    name: Frontend (Vite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install deps
+        run: |
+          cd frontend
+          npm ci || npm install
+
+      - name: Build
+        run: |
+          cd frontend
+          npm run build
