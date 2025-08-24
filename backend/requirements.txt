@@ -3,3 +3,5 @@ uvicorn[standard]
 sqlalchemy
 python-dotenv
 pytest
+python-jose[cryptography]
+passlib[bcrypt]
