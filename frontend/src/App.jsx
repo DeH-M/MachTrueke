@@ -1,12 +1,18 @@
 import { useEffect, useState } from "react";
 import { api } from "./api/client";
+import Login from "./pages/Login"; // Login
 
 export default function App() {
   const [msg, setMsg] = useState("cargando...");
+  console [Login, setLogin] = useState(true);
 
   useEffect(() => {
     api.get("/").then(res => setMsg(res.data.msg)).catch(() => setMsg("error"));
   }, []);
+
+  if (Login) {
+    return <Login />;
+  }
 
   return (
     <div style={{ padding: 24 }}>
