@@ -5,3 +5,5 @@ python-dotenv
 pytest
 python-jose[cryptography]
 passlib[bcrypt]
+email-validator
+dnspython

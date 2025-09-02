@@ -18,3 +18,15 @@ CORS_ORIGINS = [
 SECRET_KEY = os.getenv("SECRET_KEY", "devsecret")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+
+ALLOWED_EMAIL_DOMAINS = os.getenv(
+    "ALLOWED_EMAIL_DOMAINS",
+    "alumnos.udg.mx,academicos.udg.mx"
+).split(",")
+
+EMAIL_VERIFICATION_MODE = os.getenv(
+    "EMAIL_VERIFICATION_MODE",
+    "dns"  # opciones: "none" | "dns"
+).lower()
+
+EMAIL_VERIFICATION_MODE = "dns"   # en vez de "format"
