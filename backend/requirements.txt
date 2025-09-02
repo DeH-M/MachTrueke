@@ -4,6 +4,9 @@ sqlalchemy
 python-dotenv
 pytest
 python-jose[cryptography]
-passlib[bcrypt]
+passlib[bcrypt]>=1.7.4
+python-multipart
 email-validator
 dnspython
+pydantic
+

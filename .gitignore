@@ -15,3 +15,6 @@ build/
 Thumbs.db
 .vscode/
 .idea/
+
+app.db
+backend/app.bd
