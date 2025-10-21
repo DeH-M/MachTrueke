@@ -22,7 +22,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 horas
 
 # Para Swagger: indica dónde obtener el token (nuestro endpoint de login)
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login") 
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login") 
 
 # Hash de contraseñas
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

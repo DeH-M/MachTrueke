@@ -9,4 +9,5 @@ python-multipart
 email-validator
 dnspython
 pydantic
+bcrypt<4
 

@@ -1,18 +1,29 @@
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, Field
+from typing import Optional, List
 
-# Datos que llegan al crear un producto (request)
-class ProductCreate(BaseModel):
-    title: str
-    description: Optional[str] = None
+class ProductBase(BaseModel):
+    title: str = Field(..., min_length=1, max_length=120)
+    description: str = Field(..., min_length=1, max_length=2000)
 
-# Datos que regresamos al cliente (response)
-class ProductRead(BaseModel):
+class ProductCreate(ProductBase):
+    # Las imágenes vendrán por multipart (UploadFile), así que aquí no van
+    pass
+
+class ProductUpdate(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=120)
+    description: Optional[str] = Field(None, min_length=1, max_length=2000)
+    is_active: Optional[bool] = None
+
+class ProductImageRead(BaseModel):
     id: int
-    title: str
-    description: Optional[str] = None
-    owner_id: int
-
+    url: str
     class Config:
-        # Para que Pydantic pueda leer desde objetos SQLAlchemy
-        from_attributes = True  # (en Pydantic v1: orm_mode = True)
+        from_attributes = True
+
+class ProductRead(ProductBase):
+    id: int
+    owner_id: int
+    is_active: bool
+    images: List[ProductImageRead] = []
+    class Config:
+        from_attributes = True
