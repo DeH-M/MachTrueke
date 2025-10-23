@@ -1,18 +1,21 @@
+// src/routes/AppRouter.jsx
 import { createBrowserRouter } from "react-router-dom";
-import AuthLayout from "../layouts/AuthLayout";
 import AppLayout from "../layouts/AppLayout";
+import AuthLayout from "../layouts/AuthLayout";
 import ProtectedRoute from "./ProtectedRoute";
 
-// Páginas
 import Login from "../pages/Login";
 import Signup from "../pages/Signup";
 import Home from "../pages/Home";
-import Chat from "../pages/Chat";
 import Likes from "../pages/Likes";
-import Profile from "../pages/Profile";
+
+// Perfil
+import Profile from "../pages/profile/Profile";
+import ProfileProducts from "../pages/profile/ProfileProducts";
+import ProfileSettings from "../pages/profile/ProfileSettings";
 
 export const router = createBrowserRouter([
-  // Públicas (auth)
+  // Páginas públicas (auth)
   {
     element: <AuthLayout />,
     children: [
@@ -20,7 +23,8 @@ export const router = createBrowserRouter([
       { path: "/signup", element: <Signup /> },
     ],
   },
-  // Privadas
+
+  // Páginas protegidas (requieren sesión)
   {
     element: <ProtectedRoute />,
     children: [
@@ -28,11 +32,23 @@ export const router = createBrowserRouter([
         element: <AppLayout />,
         children: [
           { path: "/", element: <Home /> },
-          { path: "/chat", element: <Chat /> },
           { path: "/likes", element: <Likes /> },
-          { path: "/profile/:id", element: <Profile /> },
+
+          // Perfil y subrutas
+          {
+            path: "/profile",
+            element: <Profile />,
+            children: [
+              { index: true, element: <ProfileProducts /> },      // /profile
+              { path: "products", element: <ProfileProducts /> }, // /profile/products
+              { path: "settings", element: <ProfileSettings /> }, // /profile/settings
+            ],
+          },
         ],
       },
     ],
   },
+
+  // 404 (opcional)
+  { path: "*", element: <div style={{ padding: 24 }}>404: Página no encontrada</div> },
 ]);

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import useAuth from "../store/authStore";
+import { authApi } from "../services/authApi";
 
 export default function Login() {
   const navigate = useNavigate();
@@ -17,12 +18,12 @@ export default function Login() {
     setErrorMsg("");
     setLoading(true);
     try {
-      // simulación
-      await new Promise((r) => setTimeout(r, 600));
-      login({ email: form.email });
+      const { access_token, user } = await authApi.login({ email: form.email, password: form.password }); // { email, password }
+      localStorage.setItem("token", access_token);
+      login(user);
       navigate("/", { replace: true });
     } catch (err) {
-      setErrorMsg("Credenciales inválidas");
+      setErrorMsg(err.message || "Error al iniciar sesión");
     } finally {
       setLoading(false);
     }

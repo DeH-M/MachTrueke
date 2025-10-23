@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import useAuth from "../store/authStore";
+import { CAMPUSES } from "../constants/campuses";
+// Cuando conectes backend, descomenta y usa authApi:
+// import { authApi } from "../services/authApi";
 
 export default function Signup() {
   const navigate = useNavigate();
@@ -8,6 +11,8 @@ export default function Signup() {
 
   const [form, setForm] = useState({
     username: "",
+    fullName: "",
+    campus: "",
     email: "",
     password: "",
     confirm: "",
@@ -21,9 +26,13 @@ export default function Signup() {
 
   const validate = () => {
     if (!form.username.trim()) return "El nombre de usuario es obligatorio.";
+    if (!form.fullName.trim()) return "El nombre completo es obligatorio.";
+    if (!form.campus) return "Selecciona un campus.";
     if (!form.email.trim()) return "El correo es obligatorio.";
-    if (form.password.length < 6)
-      return "La contraseña debe tener al menos 6 caracteres.";
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email))
+      return "Correo inválido.";
+    if (form.password.length < 8)
+      return "La contraseña debe tener al menos 8 caracteres.";
     if (form.password !== form.confirm)
       return "Las contraseñas no coinciden.";
     return "";
@@ -32,20 +41,39 @@ export default function Signup() {
   const onSubmit = async (e) => {
     e.preventDefault();
     const msg = validate();
-    if (msg) {
-      setErrorMsg(msg);
-      return;
-    }
+    if (msg) return setErrorMsg(msg);
     setLoading(true);
     setErrorMsg("");
+
     try {
-      // TODO: llamar a tu backend FastAPI para crear cuenta
-      // Simulación de éxito:
-      await new Promise((r) => setTimeout(r, 600));
-      login({ email: form.email, username: form.username });
+      // 👉 Cuando conectes backend, usa esto:
+      /*
+      const { access_token, user } = await authApi.signup({
+        username: form.username,
+        full_name: form.fullName,
+        campus: form.campus, // id del campus (ej. "CUCEI")
+        email: form.email,
+        password: form.password,
+      });
+      localStorage.setItem("token", access_token);
+      login(user);
+      */
+
+      // 🔹 MOCK mientras no hay backend:
+      const mockUser = {
+        id: crypto.randomUUID(),
+        username: form.username,
+        name: form.fullName,
+        campus: form.campus,
+        email: form.email,
+        avatar: "https://i.pravatar.cc/100?img=13",
+      };
+      localStorage.setItem("token", "mock-token");
+      login(mockUser);
+
       navigate("/", { replace: true });
     } catch (err) {
-      setErrorMsg("Error al crear la cuenta.");
+      setErrorMsg(err.message || "Ocurrió un error al registrarte.");
     } finally {
       setLoading(false);
     }
@@ -53,7 +81,6 @@ export default function Signup() {
 
   return (
     <div className="bg-white rounded-2xl shadow p-6 md:p-8">
-      {/* Encabezado */}
       <h1 className="text-center text-2xl font-bold mb-6">
         Crea tu cuenta <span className="text-blue-600">MACHTRUEKE</span>
       </h1>
@@ -76,6 +103,45 @@ export default function Signup() {
           />
         </div>
 
+        {/* Nombre completo */}
+        <div className="space-y-2">
+          <label htmlFor="fullName" className="block text-sm font-medium">
+            Nombre completo
+          </label>
+          <input
+            id="fullName"
+            name="fullName"
+            type="text"
+            placeholder="Tu nombre y apellidos"
+            className="w-full rounded-xl border border-neutral-300 px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500"
+            value={form.fullName}
+            onChange={onChange}
+            required
+          />
+        </div>
+
+        {/* Campus */}
+        <div className="space-y-2">
+          <label htmlFor="campus" className="block text-sm font-medium">
+            Campus
+          </label>
+          <select
+            id="campus"
+            name="campus"
+            className="w-full rounded-xl border border-neutral-300 px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+            value={form.campus}
+            onChange={onChange}
+            required
+          >
+            <option value="">Selecciona tu campus</option>
+            {CAMPUSES.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
         {/* Correo */}
         <div className="space-y-2">
           <label htmlFor="email" className="block text-sm font-medium">
@@ -94,40 +160,40 @@ export default function Signup() {
           />
         </div>
 
-        {/* Contraseña */}
-        <div className="space-y-2">
-          <label htmlFor="password" className="block text-sm font-medium">
-            Contraseña
-          </label>
-          <input
-            id="password"
-            name="password"
-            type="password"
-            placeholder="Contraseña"
-            autoComplete="new-password"
-            className="w-full rounded-xl border border-neutral-300 px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500"
-            value={form.password}
-            onChange={onChange}
-            required
-          />
-        </div>
-
-        {/* Confirmar contraseña */}
-        <div className="space-y-2">
-          <label htmlFor="confirm" className="block text-sm font-medium">
-            Confirmar contraseña
-          </label>
-          <input
-            id="confirm"
-            name="confirm"
-            type="password"
-            placeholder="Confirma contraseña"
-            autoComplete="new-password"
-            className="w-full rounded-xl border border-neutral-300 px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500"
-            value={form.confirm}
-            onChange={onChange}
-            required
-          />
+        {/* Contraseñas */}
+        <div className="grid md:grid-cols-2 gap-3">
+          <div className="space-y-2">
+            <label htmlFor="password" className="block text-sm font-medium">
+              Contraseña
+            </label>
+            <input
+              id="password"
+              name="password"
+              type="password"
+              placeholder="•••••••• (mín. 8)"
+              autoComplete="new-password"
+              className="w-full rounded-xl border border-neutral-300 px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500"
+              value={form.password}
+              onChange={onChange}
+              required
+            />
+          </div>
+          <div className="space-y-2">
+            <label htmlFor="confirm" className="block text-sm font-medium">
+              Confirmar contraseña
+            </label>
+            <input
+              id="confirm"
+              name="confirm"
+              type="password"
+              placeholder="Repite la contraseña"
+              autoComplete="new-password"
+              className="w-full rounded-xl border border-neutral-300 px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500"
+              value={form.confirm}
+              onChange={onChange}
+              required
+            />
+          </div>
         </div>
 
         {/* Error */}
@@ -139,11 +205,10 @@ export default function Signup() {
           disabled={loading}
           className="w-full rounded-xl bg-blue-600 text-white py-2 font-semibold disabled:opacity-60"
         >
-          {loading ? "Creando..." : "Crear"}
+          {loading ? "Creando..." : "Crear cuenta"}
         </button>
       </form>
 
-      {/* Link a Login */}
       <p className="text-center text-sm mt-4">
         ¿Ya tienes cuenta?{" "}
         <Link to="/login" className="text-blue-600 underline">
