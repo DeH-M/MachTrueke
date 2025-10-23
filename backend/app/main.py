@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.staticfiles import StaticFiles           # 👈 NUEVO
 from pathlib import Path                                 # 👈 NUEVO
+from app.routers import chats            # 👈 import
 
 
 # importa tus routers
@@ -30,6 +31,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(products.router)
+app.include_router(chats.router)
 
 @app.get("/")
 def root():
