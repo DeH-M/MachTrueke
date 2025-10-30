@@ -1,8 +1,9 @@
-import { useState } from "react";
+// frontend/src/pages/Signup.jsx
+import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import useAuth from "../store/authStore";
 import { CAMPUSES } from "../constants/campuses";
-import { authApi } from "../services/authApi"; // ✅ debe existir este archivo y usar /auth/register
+import { authApi } from "../services/authApi";
 
 export default function Signup() {
   const navigate = useNavigate();
@@ -19,16 +20,52 @@ export default function Signup() {
   const [errorMsg, setErrorMsg] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const onChange = (e) => setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
+  // ---- Cargar campuses con fallback ----
+  const [campuses, setCampuses] = useState(
+    CAMPUSES.map((c) => ({ id: c.id, label: c.label }))
+  );
+  const [loadingCampuses, setLoadingCampuses] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const data = await authApi.listCampuses(); // GET /auth/campuses
+        const normalized = Array.isArray(data)
+          ? data.map((c) => ({
+              id: c.id,
+              label: c.name ?? c.label ?? c.code,
+            }))
+          : [];
+        if (mounted && normalized.length) {
+          setCampuses(normalized);
+        }
+      } catch {
+        // fallback: ya tenemos CAMPUSES locales
+      } finally {
+        if (mounted) setLoadingCampuses(false);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+  // ---- FIN cargar campuses ----
+
+  const onChange = (e) =>
+    setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
 
   const validate = () => {
     if (!form.username.trim()) return "El nombre de usuario es obligatorio.";
     if (!form.fullName.trim()) return "El nombre completo es obligatorio.";
     if (!form.campus) return "Selecciona un campus.";
     if (!form.email.trim()) return "El correo es obligatorio.";
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) return "Correo inválido.";
-    if (form.password.length < 8) return "La contraseña debe tener al menos 8 caracteres.";
-    if (form.password !== form.confirm) return "Las contraseñas no coinciden.";
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email))
+      return "Correo inválido.";
+    if (form.password.length < 8)
+      return "La contraseña debe tener al menos 8 caracteres.";
+    if (form.password !== form.confirm)
+      return "Las contraseñas no coinciden.";
     return "";
   };
 
@@ -40,26 +77,28 @@ export default function Signup() {
     setErrorMsg("");
 
     try {
-      // 🔹 Adaptar los nombres al backend (según tu Swagger)
+      // ✅ NUEVO: normalizo el correo (trim + lowercase)
+      const emailNorm = form.email.trim().toLowerCase();
+
+      // payload para /auth/register (usa nombres del backend)
       const payload = {
         username: form.username.trim(),
         full_name: form.fullName.trim(),
-        email: form.email.trim(),
+        email: emailNorm,
         password: form.password,
         confirm_password: form.confirm,
         campus_id: Number(form.campus),
       };
 
-      console.log("➡️ Enviando registro:", payload);
+      // 1) Registro
+      const reg = await authApi.signup(payload);
 
-      // 1️⃣ Registro
-      const reg = await authApi.signup(payload); // POST /auth/register
-
-      // 2️⃣ Login si el registro no devolvió token
+      // 2) Asegurar token + user (si no vienen, hacer login y/o /auth/me)
       let token = reg?.access_token || null;
       let user = reg?.user || null;
 
       if (!token) {
+        // No vino token → login con x-www-form-urlencoded
         const auth = await authApi.login({
           email: payload.email,
           password: payload.password,
@@ -68,34 +107,47 @@ export default function Signup() {
         user = auth?.user || user;
       }
 
-      // 3️⃣ Si aún no hay user, intenta cargarlo de /auth/me
-      if (!user && token) {
+      // ✅ NUEVO: guarda token si ya lo tenemos (antes de /auth/me)
+      if (token) {
         localStorage.setItem("token", token);
+      }
+
+      if (!user && token) {
+        // No vino user → hidratar con /auth/me
         try {
           user = await authApi.me(); // GET /auth/me
         } catch {
-          user = { email: payload.email, username: payload.username, full_name: payload.full_name };
+          // fallback mínimo si /me falla, no rompemos el flujo
+          user = {
+            email: payload.email,
+            username: payload.username,
+            full_name: payload.full_name,
+          };
         }
       }
 
-      // 4️⃣ Guardar token y login en store
-      if (token) localStorage.setItem("token", token);
+      // 3) Escribir en store y navegar
       if (user) login(user);
-
-      // 5️⃣ Redirigir al home (o dashboard)
-      navigate("/", { replace: true });
+      // Puedes ir al home o directamente al perfil
+      navigate("/profile", { replace: true });
     } catch (err) {
+      // Manejo de error suave sin cambiar tu lógica base
       let text = err?.message || "Ocurrió un error al registrarte.";
       try {
         const parsed = JSON.parse(err.message);
-        if (parsed?.detail)
-          text = Array.isArray(parsed.detail) ? parsed.detail[0]?.msg || text : parsed.detail;
+        if (parsed?.detail) {
+          text = Array.isArray(parsed.detail)
+            ? parsed.detail[0]?.msg || text
+            : parsed.detail;
+        }
       } catch {}
       setErrorMsg(text);
     } finally {
       setLoading(false);
     }
   };
+
+  const disableSubmit = loading || loadingCampuses; // ✅ NUEVO
 
   return (
     <div className="bg-white rounded-2xl shadow p-6 md:p-8">
@@ -117,6 +169,7 @@ export default function Signup() {
             onChange={onChange}
             className="w-full rounded-xl border px-3 py-2"
             required
+            autoComplete="username" // ✅ NUEVO
           />
         </div>
 
@@ -133,6 +186,7 @@ export default function Signup() {
             onChange={onChange}
             className="w-full rounded-xl border px-3 py-2"
             required
+            autoComplete="name" // ✅ NUEVO
           />
         </div>
 
@@ -148,9 +202,12 @@ export default function Signup() {
             onChange={onChange}
             className="w-full rounded-xl border px-3 py-2 bg-white"
             required
+            disabled={loadingCampuses}
           >
-            <option value="">Selecciona tu campus</option>
-            {CAMPUSES.map((c) => (
+            <option value="">
+              {loadingCampuses ? "Cargando campuses..." : "Selecciona tu campus"}
+            </option>
+            {campuses.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.label}
               </option>
@@ -171,6 +228,7 @@ export default function Signup() {
             onChange={onChange}
             className="w-full rounded-xl border px-3 py-2"
             required
+            autoComplete="email" // ✅ NUEVO
           />
         </div>
 
@@ -188,6 +246,7 @@ export default function Signup() {
               onChange={onChange}
               className="w-full rounded-xl border px-3 py-2"
               required
+              autoComplete="new-password" // ✅ NUEVO
             />
           </div>
           <div className="space-y-2">
@@ -202,6 +261,7 @@ export default function Signup() {
               onChange={onChange}
               className="w-full rounded-xl border px-3 py-2"
               required
+              autoComplete="new-password" // ✅ NUEVO
             />
           </div>
         </div>
@@ -212,7 +272,7 @@ export default function Signup() {
         {/* Botón */}
         <button
           type="submit"
-          disabled={loading}
+          disabled={disableSubmit}
           className="w-full rounded-xl bg-blue-600 text-white py-2 font-semibold disabled:opacity-60"
         >
           {loading ? "Creando..." : "Crear cuenta"}
@@ -228,7 +288,6 @@ export default function Signup() {
     </div>
   );
 }
-
 
 /*
 import { useState } from "react";

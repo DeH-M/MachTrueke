@@ -14,10 +14,8 @@ from ..core.security import get_password_hash, verify_password
 def get_user_by_email(db: Session, email: str) -> Optional[User]:
     return db.query(User).filter(User.email == email.strip().lower()).first()
 
-
 def get_user_by_username(db: Session, username: str) -> Optional[User]:
     return db.query(User).filter(User.username == username.strip().lower()).first()
-
 
 def get_user_by_id(db: Session, user_id: int) -> Optional[User]:
     return db.get(User, user_id)
@@ -25,7 +23,6 @@ def get_user_by_id(db: Session, user_id: int) -> Optional[User]:
 
 # ============ AUTH ============
 def authenticate_user(db: Session, *, email: str, password: str) -> Optional[User]:
-    """Devuelve el usuario si el email/password son correctos; si no, None."""
     user = get_user_by_email(db, email)
     if not user:
         return None
@@ -45,15 +42,14 @@ def create_user(
     campus_id: Optional[int] = None,
 ) -> User:
     """
-    Crea usuario. Lanza:
-      - ValueError('email_taken') si el email ya existe
-      - ValueError('username_taken') si el username ya existe
-      - LookupError('campus_not_found') si campus_id no existe
+    Lanza:
+      - ValueError('email_taken')
+      - ValueError('username_taken')
+      - LookupError('campus_not_found')
     """
     username_n = username.strip().lower()
     email_n = email.strip().lower()
 
-    # duplicados
     existing = (
         db.query(User)
         .filter(or_(User.email == email_n, User.username == username_n))
@@ -89,13 +85,13 @@ def update_user_profile(
     user: User,
     username: Optional[str] = None,
     bio: Optional[str] = None,
-    avatar_url: Optional[str] = None,
     campus_id: Optional[int] = None,
 ) -> User:
     """
-    Actualiza perfil editable. Lanza:
-      - ValueError('username_taken') si el nuevo username ya lo usa otro
-      - LookupError('campus_not_found') si campus_id no existe
+    Actualiza perfil editable (NO avatar).
+    Lanza:
+      - ValueError('username_taken')
+      - LookupError('campus_not_found')
     """
     if username is not None:
         new_un = username.strip().lower()
@@ -106,9 +102,6 @@ def update_user_profile(
 
     if bio is not None:
         user.bio = bio
-
-    if avatar_url is not None:
-        user.avatar_url = avatar_url
 
     if campus_id is not None:
         if campus_id == 0:
@@ -132,7 +125,6 @@ def change_password(
     old_password: str,
     new_password: str,
 ) -> None:
-    """Valida la contraseña actual y guarda la nueva (hasheada)."""
     if not verify_password(old_password, user.hashed_password):
         raise ValueError("invalid_old_password")
     user.hashed_password = get_password_hash(new_password)

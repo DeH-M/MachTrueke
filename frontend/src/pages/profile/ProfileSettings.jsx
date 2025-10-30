@@ -1,32 +1,65 @@
 // src/pages/profile/ProfileSettings.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CAMPUSES } from "../../constants/campuses";
+import { useNavigate } from "react-router-dom"; // ✅ agregado
+import useAuth from "../../store/authStore";
+import { authApi } from "../../services/authApi";
+import { CAMPUSES as CAMPUSES_FALLBACK } from "../../constants/campuses";
 
 export default function ProfileSettings() {
+  const { user, login, logout } = useAuth();
+  const navigate = useNavigate(); // ✅ agregado
+
   // Detectar móvil (para botón de cámara en móviles)
   const isMobile = useMemo(() => {
     if (typeof navigator === "undefined") return false;
     return /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
   }, []);
 
-  // Perfil (simulación; en tu app probablemente venga de tu store)
+  // Lista de campus (trae del backend; si falla, usa constantes locales)
+  const [campuses, setCampuses] = useState(CAMPUSES_FALLBACK);
+  useEffect(() => {
+    (async () => {
+      try {
+        const rows = await authApi.listCampuses();
+        if (Array.isArray(rows) && rows.length) {
+          setCampuses(rows.map((r) => ({ id: r.id, label: `${r.code}: ${r.name}` })));
+        }
+      } catch {
+        // fallback ya está cargado
+      }
+    })();
+  }, []);
+
+  // Perfil (inicializa con el usuario real)
   const [profile, setProfile] = useState({
-    username: "usuario123",
-    fullName: "Nombre Apellido Apellido",
-    campus: "",
-    bio: "",
-    email: "correo@alumnos.udg.mx",
-    avatar: "",
+    username: user?.username || "",
+    fullName: user?.full_name || "",
+    campus: user?.campus_id ?? "",
+    bio: user?.bio ?? "",
+    email: user?.email || "",
+    avatar: user?.avatar_url || "",
   });
+
+  useEffect(() => {
+    // si cambia el user en memoria, rehidratar
+    setProfile((p) => ({
+      ...p,
+      username: user?.username || "",
+      fullName: user?.full_name || "",
+      campus: user?.campus_id ?? "",
+      bio: user?.bio ?? "",
+      email: user?.email || "",
+      avatar: user?.avatar_url || "",
+    }));
+  }, [user]);
 
   // Contraseña
   const [pwd, setPwd] = useState({ current: "", next: "", confirm: "" });
 
-  // Notificaciones
-  const [prefs, setPrefs] = useState({
-    notifications: true,
-    emailNotifications: false,
-  });
+  // Estado UI
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [savingPwd, setSavingPwd] = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
 
   // Refs de archivos
   const fileInputRef = useRef(null);
@@ -38,59 +71,95 @@ export default function ProfileSettings() {
   const onChangePwd = (e) =>
     setPwd((p) => ({ ...p, [e.target.name]: e.target.value }));
 
-  const togglePref = (k) => setPrefs((p) => ({ ...p, [k]: !p[k] }));
-
-  const handleAvatarFile = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const url = URL.createObjectURL(file);
-    setProfile((p) => ({ ...p, avatar: url }));
-  };
-
   const triggerPickPhoto = () => fileInputRef.current?.click();
 
-  const saveProfile = (e) => {
-    e.preventDefault();
-    alert(
-      "Perfil guardado (mock):\n" +
-        JSON.stringify(
-          {
-            username: profile.username,
-            fullName: profile.fullName,
-            campus: profile.campus,
-            bio: profile.bio,
-            email: profile.email,
-          },
-          null,
-          2
-        )
-    );
+  const handleAvatarFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Preview inmediata
+    const url = URL.createObjectURL(file);
+    setProfile((p) => ({ ...p, avatar: url }));
+
+    setUploadingAvatar(true);
+    try {
+      await authApi.uploadAvatar(file);
+      // refrescar /auth/me para tener la URL definitiva servida por el backend
+      const fresh = await authApi.me();
+      login(fresh);
+    } catch (err) {
+      alert(getErrText(err, "No se pudo subir la imagen"));
+    } finally {
+      setUploadingAvatar(false);
+      // 🔸 liberar la URL temporal (evita memory leaks)
+      try { URL.revokeObjectURL(url); } catch {}
+    }
   };
 
-  const savePwd = (e) => {
+  // Guardar perfil (username, bio, campus)
+  const saveProfile = async (e) => {
+    e.preventDefault();
+    setSavingProfile(true);
+    try {
+      const updated = await authApi.updateMe({
+        username: profile.username?.trim(),
+        bio: profile.bio ?? null,
+        campus_id: profile.campus === "" ? null : Number(profile.campus),
+        // avatar_url no se envía aquí; el archivo se sube en su endpoint dedicado
+      });
+      // refrescar store con el user actualizado
+      login(updated);
+      alert("Perfil actualizado");
+    } catch (err) {
+      alert(getErrText(err, "No se pudo actualizar el perfil"));
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const savePwd = async (e) => {
     e.preventDefault();
     if (!pwd.current || !pwd.next) return alert("Completa los campos de contraseña.");
     if (pwd.next.length < 8) return alert("La nueva contraseña debe tener al menos 8 caracteres.");
     if (pwd.next !== pwd.confirm) return alert("La confirmación no coincide.");
-    alert("Contraseña actualizada (mock)");
-    setPwd({ current: "", next: "", confirm: "" });
+
+    setSavingPwd(true);
+    try {
+      await authApi.changePassword({
+        old_password: pwd.current,
+        new_password: pwd.next,
+        confirm_password: pwd.confirm,
+      });
+      alert("Contraseña actualizada");
+      setPwd({ current: "", next: "", confirm: "" });
+    } catch (err) {
+      alert(getErrText(err, "No se pudo cambiar la contraseña"));
+    } finally {
+      setSavingPwd(false);
+    }
   };
 
-  const savePrefs = (e) => {
-    e.preventDefault();
-    alert("Preferencias guardadas (mock):\n" + JSON.stringify(prefs, null, 2));
-  };
-
-  const deleteAccount = () => {
+  const deleteAccount = async () => {
     if (!confirm("¿Seguro que deseas eliminar tu cuenta? Esta acción es irreversible.")) return;
-    alert("Cuenta eliminada (mock). Aquí llamarías a DELETE /me y cerrar sesión.");
+    try {
+      await authApi.deleteMe();
+      localStorage.removeItem("token");
+      logout();
+      alert("Cuenta eliminada");
+      navigate("/", { replace: true }); // ✅ agregado
+    } catch (err) {
+      alert(getErrText(err, "No se pudo eliminar la cuenta"));
+    }
   };
 
-  // clases base (sin fondo para cada recuadro como pediste)
+  // clases base
   const card = "relative rounded-2xl border border-neutral-300/70 bg-transparent p-4 md:p-5";
   const label = "block text-xs mb-1 text-neutral-700";
   const input =
     "w-full rounded-xl border border-neutral-300 px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500 bg-white";
+
+  // 🔸 Protección suave si aún no hay user (evita parpadeos)
+  const disabledAll = !user;
 
   return (
     <div className="space-y-5">
@@ -98,12 +167,11 @@ export default function ProfileSettings() {
       <section className={card}>
         <h3 className="font-semibold mb-3">Perfil</h3>
 
-        {/* padding-bottom extra para no tapar inputs con el botón fijo */}
         <form onSubmit={saveProfile} className="space-y-3 pb-16">
           <div className="grid md:grid-cols-3 gap-3">
-            {/* Cols 1-2: campos (pero nombre completo y correo son solo lectura) */}
+            {/* Cols 1-2 */}
             <div className="md:col-span-2 space-y-3">
-              {/* Nombre completo: renglón propio (width completa), solo lectura */}
+              {/* Nombre completo (solo lectura) */}
               <div>
                 <label className={label}>Nombre completo</label>
                 <input
@@ -118,7 +186,7 @@ export default function ProfileSettings() {
                 </p>
               </div>
 
-              {/* Usuario (editable si quieres) */}
+              {/* Usuario */}
               <div>
                 <label className={label}>Nombre de usuario</label>
                 <input
@@ -126,10 +194,11 @@ export default function ProfileSettings() {
                   value={profile.username}
                   onChange={onChangeProfile}
                   className={input}
+                  disabled={disabledAll}
                 />
               </div>
 
-              {/* Campus (selector con lista) */}
+              {/* Campus */}
               <div>
                 <label className={label}>Campus</label>
                 <select
@@ -137,9 +206,10 @@ export default function ProfileSettings() {
                   value={profile.campus}
                   onChange={onChangeProfile}
                   className={`${input} bg-white`}
+                  disabled={disabledAll}
                 >
                   <option value="">Selecciona tu campus</option>
-                  {CAMPUSES.map((c) => (
+                  {campuses.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.label}
                     </option>
@@ -156,10 +226,11 @@ export default function ProfileSettings() {
                   value={profile.bio}
                   onChange={onChangeProfile}
                   className={input}
+                  disabled={disabledAll}
                 />
               </div>
 
-              {/* Correo: solo lectura */}
+              {/* Correo (solo lectura) */}
               <div>
                 <label className={label}>Correo</label>
                 <input
@@ -176,7 +247,7 @@ export default function ProfileSettings() {
               </div>
             </div>
 
-            {/* Col 3: Avatar (archivo o cámara) */}
+            {/* Col 3: Avatar */}
             <div className="md:col-span-1 space-y-2">
               <label className={label}>Foto de perfil</label>
 
@@ -215,13 +286,15 @@ export default function ProfileSettings() {
                         type="button"
                         onClick={() => cameraInputRef.current?.click()}
                         className="rounded-xl bg-blue-600 text-white px-3 py-2 text-xs font-semibold hover:bg-blue-700"
+                        disabled={uploadingAvatar || disabledAll}
                       >
-                        Tomar foto
+                        {uploadingAvatar ? "Subiendo..." : "Tomar foto"}
                       </button>
                       <button
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
                         className="rounded-xl bg-neutral-800 text-white px-3 py-2 text-xs font-semibold hover:bg-neutral-700"
+                        disabled={uploadingAvatar || disabledAll}
                       >
                         Elegir de galería
                       </button>
@@ -231,8 +304,9 @@ export default function ProfileSettings() {
                       type="button"
                       onClick={triggerPickPhoto}
                       className="rounded-xl bg-blue-600 text-white px-3 py-2 text-xs font-semibold hover:bg-blue-700"
+                      disabled={uploadingAvatar || disabledAll}
                     >
-                      Subir imagen
+                      {uploadingAvatar ? "Subiendo..." : "Subir imagen"}
                     </button>
                   )}
 
@@ -240,8 +314,19 @@ export default function ProfileSettings() {
                     <div>
                       <button
                         type="button"
-                        onClick={() => setProfile((p) => ({ ...p, avatar: "" }))}
+                        onClick={async () => {
+                          // quitar visualmente y borrar en backend
+                          setProfile((p) => ({ ...p, avatar: "" }));
+                          try {
+                            await authApi.deleteAvatar();
+                            const fresh = await authApi.me();
+                            login(fresh);
+                          } catch (err) {
+                            alert(getErrText(err, "No se pudo eliminar el avatar"));
+                          }
+                        }}
                         className="rounded-xl bg-neutral-200 px-3 py-2 text-xs font-semibold hover:bg-neutral-300"
+                        disabled={disabledAll}
                       >
                         Quitar
                       </button>
@@ -257,10 +342,13 @@ export default function ProfileSettings() {
             </div>
           </div>
 
-          {/* Botón fijo abajo-derecha de la tarjeta */}
+          {/* Botón fijo */}
           <div className="absolute right-4 bottom-4">
-            <button className="rounded-xl bg-blue-600 text-white px-5 py-2 font-semibold hover:bg-blue-700">
-              Guardar
+            <button
+              className="rounded-xl bg-blue-600 text-white px-5 py-2 font-semibold hover:bg-blue-700 disabled:opacity-60"
+              disabled={savingProfile || disabledAll}
+            >
+              {savingProfile ? "Guardando..." : "Guardar"}
             </button>
           </div>
         </form>
@@ -280,6 +368,7 @@ export default function ProfileSettings() {
                 value={pwd.current}
                 onChange={onChangePwd}
                 className={input}
+                disabled={disabledAll}
               />
             </div>
             <div>
@@ -290,6 +379,7 @@ export default function ProfileSettings() {
                 value={pwd.next}
                 onChange={onChangePwd}
                 className={input}
+                disabled={disabledAll}
               />
             </div>
             <div className="grid grid-cols-[1fr,auto] gap-3 items-end">
@@ -301,10 +391,14 @@ export default function ProfileSettings() {
                   value={pwd.confirm}
                   onChange={onChangePwd}
                   className={input}
+                  disabled={disabledAll}
                 />
               </div>
-              <button className="rounded-xl bg-blue-600 text-white px-5 py-2 font-semibold hover:bg-blue-700">
-                Guardar contraseña
+              <button
+                className="rounded-xl bg-blue-600 text-white px-5 py-2 font-semibold hover:bg-blue-700 disabled:opacity-60"
+                disabled={savingPwd || disabledAll}
+              >
+                {savingPwd ? "Guardando..." : "Guardar contraseña"}
               </button>
             </div>
           </div>
@@ -315,25 +409,8 @@ export default function ProfileSettings() {
       <section className={card}>
         <h3 className="font-semibold mb-3">Notificaciones</h3>
 
-        <form onSubmit={savePrefs} className="space-y-4">
-          <ToggleRow
-            label="Notificaciones"
-            checked={prefs.notifications}
-            onClick={() => togglePref("notifications")}
-          />
-          <ToggleRow
-            label="Notificaciones por correo"
-            checked={prefs.emailNotifications}
-            onClick={() => togglePref("emailNotifications")}
-          />
-
-          <div className="flex justify-end">
-            <button className="rounded-xl bg-blue-600 text-white px-5 py-2 font-semibold hover:bg-blue-700">
-              Guardar
-            </button>
-          </div>
-        </form>
-
+        {/* Este bloque es visual; si luego agregas backend para prefs, reemplaza por llamadas */}
+        <DummyNotifications />
         <hr className="my-5 border-neutral-300/70" />
 
         <div className="flex items-center justify-between">
@@ -346,12 +423,47 @@ export default function ProfileSettings() {
           <button
             onClick={deleteAccount}
             className="rounded-xl bg-red-600 text-white px-4 py-2 text-sm font-semibold hover:bg-red-700"
+            disabled={disabledAll}
           >
             Eliminar
           </button>
         </div>
       </section>
     </div>
+  );
+}
+
+function DummyNotifications() {
+  const [prefs, setPrefs] = useState({
+    notifications: true,
+    emailNotifications: false,
+  });
+  const togglePref = (k) => setPrefs((p) => ({ ...p, [k]: !p[k] }));
+  const label = "text-sm";
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        alert("Preferencias (demo):\n" + JSON.stringify(prefs, null, 2));
+      }}
+      className="space-y-4"
+    >
+      <ToggleRow
+        label="Notificaciones"
+        checked={prefs.notifications}
+        onClick={() => togglePref("notifications")}
+      />
+      <ToggleRow
+        label="Notificaciones por correo"
+        checked={prefs.emailNotifications}
+        onClick={() => togglePref("emailNotifications")}
+      />
+      <div className="flex justify-end">
+        <button className="rounded-xl bg-blue-600 text-white px-5 py-2 font-semibold hover:bg-blue-700">
+          Guardar
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -375,4 +487,19 @@ function ToggleRow({ label, checked, onClick }) {
       </button>
     </div>
   );
+}
+
+/* ------- util pequeño para mostrar el error del backend de forma amable ------- */
+function getErrText(err, fallback) {
+  if (!err) return fallback;
+  if (typeof err === "string") return err;
+  const m = err?.message;
+  if (!m) return fallback;
+  try {
+    const j = JSON.parse(m);
+    if (j?.detail) {
+      return Array.isArray(j.detail) ? j.detail[0]?.msg || fallback : j.detail;
+    }
+  } catch {}
+  return m || fallback;
 }

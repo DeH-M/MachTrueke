@@ -1,3 +1,4 @@
+// frontend/src/pages/Login.jsx
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import useAuth from "../store/authStore";
@@ -5,25 +6,49 @@ import { authApi } from "../services/authApi";
 
 export default function Login() {
   const navigate = useNavigate();
-  const { login } = useAuth();
+  const { login, loginWithToken } = useAuth(); // ⬅️ tomamos loginWithToken si existe
   const [form, setForm] = useState({ email: "", password: "" });
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
-  const onChange = (e) => setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
+  const onChange = (e) =>
+    setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
 
   const onSubmit = async (e) => {
     e.preventDefault();
     setErrorMsg("");
     setLoading(true);
     try {
-      const { access_token, user } = await authApi.login({ email: form.email, password: form.password }); // { email, password }
-      localStorage.setItem("token", access_token);
-      login(user);
-      navigate("/", { replace: true });
+      // Backend espera OAuth2PasswordRequestForm → ya lo maneja authApi.login
+      const { access_token, user } = await authApi.login({
+        email: form.email,
+        password: form.password,
+      });
+
+      if (!access_token) {
+        throw new Error("Login sin token. Revisa el backend.");
+      }
+
+      // 🔑 Preferencia: hidratar con el método del store (si existe)
+      if (typeof loginWithToken === "function") {
+        await loginWithToken(access_token);
+      } else {
+        // Fallback seguro si tu store aún no expone loginWithToken
+        localStorage.setItem("token", access_token);
+        try {
+          const me = await authApi.me();
+          login(me || user || null);
+        } catch {
+          // si /auth/me falla, al menos entra con lo que regresa /login
+          login(user || null);
+        }
+      }
+
+      // Redirige donde prefieras (perfil suele ser lo esperado al iniciar)
+      navigate("/profile", { replace: true });
     } catch (err) {
-      setErrorMsg(err.message || "Error al iniciar sesión");
+      setErrorMsg(err?.message || "Error al iniciar sesión");
     } finally {
       setLoading(false);
     }
@@ -37,7 +62,9 @@ export default function Login() {
 
       <form onSubmit={onSubmit} className="space-y-4">
         <div className="space-y-2">
-          <label htmlFor="email" className="block text-sm font-medium">Correo electrónico</label>
+          <label htmlFor="email" className="block text-sm font-medium">
+            Correo electrónico
+          </label>
           <input
             id="email"
             name="email"
@@ -52,7 +79,9 @@ export default function Login() {
         </div>
 
         <div className="space-y-2">
-          <label htmlFor="password" className="block text-sm font-medium">Contraseña</label>
+          <label htmlFor="password" className="block text-sm font-medium">
+            Contraseña
+          </label>
           <div className="relative">
             <input
               id="password"
@@ -87,9 +116,11 @@ export default function Login() {
       </form>
 
       <p className="text-center text-sm mt-4">
-        ¿No tienes cuenta? <Link to="/signup" className="text-blue-600 underline">Crea una aquí</Link>
+        ¿No tienes cuenta?{" "}
+        <Link to="/signup" className="text-blue-600 underline">
+          Crea una aquí
+        </Link>
       </p>
     </div>
   );
 }
-

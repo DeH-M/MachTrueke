@@ -149,7 +149,6 @@ def update_me(
             user=current_user,
             username=payload.username,
             bio=payload.bio,
-            avatar_url=payload.avatar_url,
             campus_id=payload.campus_id,
         )
     except ValueError as e:
