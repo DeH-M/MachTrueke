@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+// src/pages/profile/ProfileProducts.jsx
+import { useEffect, useState, useRef } from "react"; // ✅ agregado useRef
 import { productsApi } from "../../services/productsApi";
 
 export default function ProfileProducts() {
@@ -8,6 +9,11 @@ export default function ProfileProducts() {
   // Modal de edición (igual que antes)
   const [open, setOpen] = useState(false);
   const [current, setCurrent] = useState(null);
+
+  // ✅ NUEVO: refs/estado para creación con imágenes
+  const fileInputRef = useRef(null);
+  const pendingNewMetaRef = useRef(null); // { title, description }
+  const creatingRef = useRef(false);
 
   const mainImage = (p) => p.images?.[0];
 
@@ -36,15 +42,35 @@ export default function ProfileProducts() {
     setOpen(false);
     setCurrent(null);
   };
-  const saveProduct = () => {
-    setProducts((ps) => ps.map((p) => (p.id === current.id ? current : p)));
-    closeEditor();
+
+  // ✅ ACTUALIZADO: guardar en backend (PATCH) y reflejar en memoria
+  const saveProduct = async () => {
+    try {
+      await productsApi.update(current.id, {
+        title: current.title,
+        description: current.description,
+      });
+      setProducts((ps) => ps.map((p) => (p.id === current.id ? current : p)));
+      closeEditor();
+    } catch (e) {
+      console.error(e);
+      alert("No se pudo guardar el producto");
+    }
   };
-  const deleteProduct = () => {
+
+  // ✅ ACTUALIZADO: eliminar en backend (DELETE) y limpiar local
+  const deleteProduct = async () => {
     if (!confirm("¿Eliminar este producto?")) return;
-    setProducts((ps) => ps.filter((p) => p.id !== current.id));
-    closeEditor();
+    try {
+      await productsApi.remove(current.id);
+      setProducts((ps) => ps.filter((p) => p.id !== current.id));
+      closeEditor();
+    } catch (e) {
+      console.error(e);
+      alert("No se pudo eliminar el producto");
+    }
   };
+
   const toggleVisible = (id) =>
     setProducts((ps) => ps.map((p) => (p.id === id ? { ...p, visible: !p.visible } : p)));
 
@@ -55,12 +81,60 @@ export default function ProfileProducts() {
   const removeImage = (idx) =>
     setCurrent((c) => ({ ...c, images: c.images.filter((_, i) => i !== idx) }));
 
+  // ✅ NUEVO: flujo crear → elegir imágenes → subir
+  const handleAddClick = async () => {
+    const title = prompt("Título del producto:");
+    if (!title) return;
+    const description = prompt("Descripción (opcional):") || "";
+    // guardamos meta pendiente y abrimos selector de archivos
+    pendingNewMetaRef.current = { title: title.trim(), description: description.trim() };
+    fileInputRef.current?.click();
+  };
+
+  // ✅ NUEVO: al elegir archivos, creamos el producto y subimos imágenes
+  const handleFilesChosen = async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = ""; // reset input
+    if (!pendingNewMetaRef.current || creatingRef.current) return;
+
+    creatingRef.current = true;
+    try {
+      // Paso 1: crear metadata
+      const created = await productsApi.create(pendingNewMetaRef.current);
+      // Paso 2: subir imágenes (si hay)
+      if (files.length > 0) {
+        await productsApi.addImages(created.id, files);
+      }
+      // Refrescar lista
+      const { items } = await productsApi.listMine();
+      setProducts(items || []);
+      alert("Producto publicado ✅");
+    } catch (err) {
+      console.error(err);
+      alert("No se pudo crear el producto");
+    } finally {
+      creatingRef.current = false;
+      pendingNewMetaRef.current = null;
+    }
+  };
+
   return (
     <>
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-bold">Tus productos</h2>
+
+        {/* ✅ NUEVO: input oculto para subir imágenes al crear */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          className="hidden"
+          onChange={handleFilesChosen}
+        />
+
         <button
-          onClick={() => alert("Agregar producto (mock)")}
+          onClick={handleAddClick} // ✅ antes era alert mock
           className="rounded-xl bg-blue-600 text-white px-4 py-2 text-sm font-semibold hover:bg-blue-700"
         >
           Agregar

@@ -134,6 +134,44 @@ const real = {
   // Listar campuses (para el combo)
   listCampuses: (q) =>
     baseFetch(`/auth/campuses${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+
+  // ---------- 🛍️ PRODUCTOS (AGREGADO, según tu Swagger) ----------
+  // GET /products/me/mine
+  listMyProducts: () => baseFetch("/products/me/mine"),
+
+  // POST /products  (crea solo metadata del product, sin imágenes)
+  createProductMeta: ({ title, description }) =>
+    baseFetch("/products", {
+      method: "POST",
+      body: JSON.stringify({ title, description }),
+    }),
+
+  // POST /products/{product_id}/images  (sube imágenes multipart)
+  addProductImages: (productId, files) => {
+    const fd = new FormData();
+    (files || []).forEach((f) => fd.append("images", f)); // campo "images" múltiple
+    return baseFetch(`/products/${productId}/images`, {
+      method: "POST",
+      body: fd, // NO poner Content-Type manual
+    });
+  },
+
+  // GET /products/{product_id}
+  getProduct: (id) => baseFetch(`/products/${id}`),
+
+  // PATCH /products/{product_id}
+  updateProduct: (id, partial) =>
+    baseFetch(`/products/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(partial),
+    }),
+
+  // DELETE /products/{product_id}
+  deleteProduct: (id) => baseFetch(`/products/${id}`, { method: "DELETE" }),
+
+  // DELETE /products/{product_id}/images/{image_id}
+  deleteProductImage: (productId, imageId) =>
+    baseFetch(`/products/${productId}/images/${imageId}`, { method: "DELETE" }),
 };
 
 export const authApi = {
@@ -149,6 +187,14 @@ export const authApi = {
   uploadAvatar: (f) => real.uploadAvatar(f),
   deleteAvatar: () => real.deleteAvatar(),
   listCampuses: (q) => real.listCampuses(q),
-};
 
+  // 🛍️ PRODUCTOS (AGREGADO)
+  listMyProducts: () => real.listMyProducts(),
+  createProductMeta: (p) => real.createProductMeta(p),
+  addProductImages: (id, files) => real.addProductImages(id, files),
+  getProduct: (id) => real.getProduct(id),
+  updateProduct: (id, partial) => real.updateProduct(id, partial),
+  deleteProduct: (id) => real.deleteProduct(id),
+  deleteProductImage: (pid, iid) => real.deleteProductImage(pid, iid),
+};
 
