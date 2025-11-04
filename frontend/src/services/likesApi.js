@@ -2,21 +2,23 @@
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const USE_MOCK = import.meta.env.VITE_USE_MOCK === "1";
 
-async function http(path, options = {}) {
+/* ---------------- HTTP helper ---------------- */
+async function http(path, { method = "GET", body, headers } = {}) {
   const token = localStorage.getItem("token");
   const res = await fetch(`${API_URL}${path}`, {
+    method,
     headers: {
-      ...(options.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+      ...(body instanceof FormData ? {} : { "Content-Type": "application/json" }),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(options.headers || {}),
+      ...(headers || {}),
     },
-    ...options,
+    body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) throw new Error((await res.text()) || `Error ${res.status}`);
   return res.json();
 }
 
-// ---------- MOCKS ----------
+/* ---------------- MOCKS (opcional) ---------------- */
 const mockPeople = [
   { id: "u1", name: "Hermione", avatar: "https://i.pravatar.cc/100?img=47" },
   { id: "u2", name: "Dobby",    avatar: "https://i.pravatar.cc/100?img=11" },
@@ -24,17 +26,39 @@ const mockPeople = [
 ];
 
 function mockListMine() {
-  // matches vacíos por defecto; se irá llenando con addLocalMatch desde Home
-  return Promise.resolve({ items: [] });
+  return Promise.resolve({
+    items: [
+      {
+        id: crypto.randomUUID(),
+        type: "person",
+        person: { ...mockPeople[0], last: "Hola, claro" },
+        note: "Nuevo match",
+        created_at: new Date().toISOString(),
+      },
+      {
+        id: crypto.randomUUID(),
+        type: "product",
+        product: {
+          id: "p123",
+          title: "Calculadora científica",
+          cover:
+            "https://images.unsplash.com/photo-1588345921523-c2dcdb7f1dcd?q=80&w=1000&auto=format&fit=crop",
+        },
+        owner: mockPeople[1],
+        note: "Intercambio por cuaderno",
+        created_at: new Date().toISOString(),
+      },
+    ],
+  });
 }
 
 function mockCreate(productId) {
-  // Devuelve un objeto match “realista” solo para pruebas
   const owner = mockPeople[Math.floor(Math.random() * mockPeople.length)];
   return Promise.resolve({
     id: crypto.randomUUID(),
+    type: "product",
     product: {
-      id: productId,
+      id: String(productId),
       title: `Producto ${productId}`,
       cover:
         "https://images.unsplash.com/photo-1588345921523-c2dcdb7f1dcd?q=80&w=1000&auto=format&fit=crop",
@@ -45,20 +69,20 @@ function mockCreate(productId) {
   });
 }
 
-// ---------- API ----------
+/* ---------------- API real ---------------- */
 export const likesApi = {
   // GET /likes/mine  -> { items: [...] }
   async listMine() {
     if (USE_MOCK) return mockListMine();
-    return http("/api/likes/mine", { method: "GET" });
+    return http(`/likes/mine`, { method: "GET" });
   },
 
-  // POST /likes  -> body: { productId }  -> { match }
+  // POST /likes  -> body: { product_id }  -> { item }
   async create(productId) {
     if (USE_MOCK) return mockCreate(productId);
-    return http("/api/likes", {
+    return http(`/likes`, {
       method: "POST",
-      body: JSON.stringify({ productId }),
+      body: { product_id: productId },
     });
   },
 };
