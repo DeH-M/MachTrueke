@@ -4,44 +4,80 @@ import { useSwipeable } from "react-swipeable";
 import { useLikes } from "../store/likesStore";
 import { likesApi } from "../services/likesApi";
 
-// Cola MOCK de productos (mientras no hay backend)
-const MOCK = [
-  {
-    id: "p100",
-    title: "Calculadora científica",
-    description: "Casio FX-991EX",
-    images: [
-      "https://images.unsplash.com/photo-1588345921523-c2dcdb7f1dcd?q=80&w=1200&auto=format&fit=crop",
-    ],
-    owner: { id: "u1", name: "Hermione", avatar: "https://i.pravatar.cc/100?img=47" },
-  },
-  {
-    id: "p101",
-    title: "Mochila azul",
-    description: "Buen estado",
-    images: [
-      "https://images.unsplash.com/photo-1582582864648-1950e76c9c1b?q=80&w=1200&auto=format&fit=crop",
-    ],
-    owner: { id: "u2", name: "Dobby", avatar: "https://i.pravatar.cc/100?img=11" },
-  },
-];
+// Si ya tienes este valor centralizado, puedes importarlo desde un helper.
+// Aquí lo leemos directo del .env para no tocar otros archivos.
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+
+/* -------- helper: normaliza ProductRead del backend a la UI de esta tarjeta -------- */
+function toCard(p) {
+  // p.images puede venir como [{id,url}] -> convertimos a array de urls
+  const imageUrls = Array.isArray(p.images)
+    ? p.images.map((img) => (typeof img === "string" ? img : img?.url)).filter(Boolean)
+    : [];
+
+  // El backend actual no devuelve datos del owner (solo owner_id).
+  // Mantenemos compatibilidad: si no hay owner, ocultamos ese bloque.
+  return {
+    id: String(p.id),
+    title: p.title ?? "",
+    description: p.description ?? "",
+    images: imageUrls,            // array de URLs absolutas (backend ya las hace absolutas)
+    owner: null,                  // { id, name, avatar } si más adelante lo agregas en el backend
+  };
+}
 
 export default function Home() {
-  // Cola local (luego la puedes traer desde tu API)
-  const [queue, setQueue] = useState(MOCK);
+  const [queue, setQueue] = useState([]);  // cola de productos para swipe
   const [idx, setIdx] = useState(0);
   const card = queue[idx];
 
-  // Animación/gesto
   const [dragX, setDragX] = useState(0);
   const [isAnimating, setIsAnimating] = useState(false);
 
-  // Likes store
-  const { addLocalMatch } = useLikes();
+  const [loading, setLoading] = useState(true);
+  const [errMsg, setErrMsg] = useState("");
 
-  // Umbral para decidir match/reject
+  const { addLocalMatch } = useLikes();
   const THRESHOLD = 100;
 
+  /* -------------------- Carga inicial desde backend -------------------- */
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        setLoading(true);
+        setErrMsg("");
+
+        // GET /?limit=&offset=
+        const res = await fetch(`${API_URL}/?limit=50&offset=0`, {
+          headers: {
+            // si tu lista pública no requiere token, esto es suficiente;
+            // si sí lo requiere, añade Authorization: Bearer <token> aquí
+            "Content-Type": "application/json",
+          },
+        });
+        if (!res.ok) throw new Error(await res.text());
+
+        const data = await res.json(); // se espera un array de ProductRead
+        const items = Array.isArray(data) ? data.map(toCard) : [];
+        if (!alive) return;
+
+        setQueue(items);
+        setIdx(0);
+      } catch (e) {
+        console.error(e);
+        if (alive) setErrMsg("No se pudieron cargar los productos.");
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  /* -------------------- navegación/animación -------------------- */
   const resetDrag = () => setDragX(0);
 
   const goNext = () => {
@@ -52,11 +88,9 @@ export default function Home() {
 
   const onReject = () => {
     if (!card) return;
-    // Aquí puedes notificar rechazo a backend si lo requieren
-    // await likesApi.reject(card.id) (si existe)
-    // Animación hacia la izquierda
+    // Si más adelante hay endpoint de rechazo, puedes llamarlo aquí.
     setIsAnimating(true);
-    setDragX(-window.innerWidth); // “sale” a la izquierda
+    setDragX(-window.innerWidth);
     setTimeout(goNext, 200);
   };
 
@@ -64,18 +98,17 @@ export default function Home() {
     if (!card) return;
     try {
       const created = await likesApi.create(card.id);
-      // Actualiza store local (para Likes)
+      // Refresca store local (para la vista de Likes)
       addLocalMatch({
         id: created.id || crypto.randomUUID(),
         product: { id: card.id, title: card.title, cover: card.images?.[0] },
-        owner: card.owner,
+        owner: card.owner, // hoy puede ser null; cuando tengas owner real, se mostrará
         note: created.note || "Match",
         created_at: created.created_at || new Date().toISOString(),
       });
 
-      // Animación hacia la derecha
       setIsAnimating(true);
-      setDragX(window.innerWidth); // “sale” a la derecha
+      setDragX(window.innerWidth);
       setTimeout(goNext, 200);
     } catch (e) {
       console.error(e);
@@ -85,29 +118,24 @@ export default function Home() {
     }
   };
 
-  // Handlers de swipe (touch y mouse)
+  /* -------------------- Swipe handlers -------------------- */
   const handlers = useSwipeable({
     onSwiping: (e) => {
       if (isAnimating) return;
-      setDragX(e.deltaX); // positivo = derecha, negativo = izquierda
+      setDragX(e.deltaX);
     },
     onSwiped: (e) => {
       if (isAnimating) return;
       const dx = e.deltaX;
-      if (dx > THRESHOLD) {
-        onMatch();
-      } else if (dx < -THRESHOLD) {
-        onReject();
-      } else {
-        // vuelve al centro
-        resetDrag();
-      }
+      if (dx > THRESHOLD) onMatch();
+      else if (dx < -THRESHOLD) onReject();
+      else resetDrag();
     },
-    trackMouse: true, // permite arrastrar con mouse
+    trackMouse: true,
     preventScrollOnSwipe: true,
   });
 
-  // Atajos de teclado (← rechazar / → match)
+  /* -------------------- Atajos de teclado -------------------- */
   useEffect(() => {
     const onKey = (ev) => {
       if (!card) return;
@@ -118,8 +146,8 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKey);
   }, [card]);
 
-  // Estilos derivados del arrastre
-  const rotate = (dragX / 20); // ligero giro
+  /* -------------------- Estilos derivados del arrastre -------------------- */
+  const rotate = dragX / 20;
   const opacityYes = Math.min(Math.max(dragX / 120, 0), 1);
   const opacityNo = Math.min(Math.max(-dragX / 120, 0), 1);
   const translate = `translateX(${dragX}px) rotate(${rotate}deg)`;
@@ -127,7 +155,11 @@ export default function Home() {
   return (
     <div className="min-h-[calc(100vh-56px)] bg-[#f5f2e9] px-4 py-6">
       <div className="mx-auto w-full max-w-6xl flex flex-col items-center">
-        {!card ? (
+        {loading ? (
+          <p className="text-sm text-neutral-600">Cargando…</p>
+        ) : errMsg ? (
+          <p className="text-sm text-red-600">{errMsg}</p>
+        ) : !card ? (
           <p className="text-sm text-neutral-600">No hay más productos por ahora.</p>
         ) : (
           <div className="w-full max-w-md">
@@ -135,10 +167,7 @@ export default function Home() {
             <div
               {...handlers}
               className="relative select-none will-change-transform"
-              style={{
-                transform: translate,
-                transition: isAnimating ? "transform 200ms ease" : "none",
-              }}
+              style={{ transform: translate, transition: isAnimating ? "transform 200ms ease" : "none" }}
             >
               <div className="bg-white rounded-2xl shadow overflow-hidden">
                 {/* Imagen */}
@@ -170,14 +199,17 @@ export default function Home() {
                   <h2 className="text-lg font-bold">{card.title}</h2>
                   <p className="text-sm text-neutral-600">{card.description}</p>
 
-                  <div className="flex items-center gap-2 mt-2">
-                    <img
-                      src={card.owner.avatar}
-                      alt={card.owner.name}
-                      className="h-7 w-7 rounded-full object-cover ring-1 ring-black/5"
-                    />
-                    <span className="text-xs">{card.owner.name}</span>
-                  </div>
+                  {/* Sección owner (opcional) */}
+                  {card.owner && (
+                    <div className="flex items-center gap-2 mt-2">
+                      <img
+                        src={card.owner.avatar}
+                        alt={card.owner.name}
+                        className="h-7 w-7 rounded-full object-cover ring-1 ring-black/5"
+                      />
+                      <span className="text-xs">{card.owner.name}</span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -198,7 +230,6 @@ export default function Home() {
               </button>
             </div>
 
-            {/* Pista de uso */}
             <p className="text-[11px] text-neutral-500 mt-2 text-center">
               Desliza a la derecha para hacer match, a la izquierda para rechazar (teclas → / ← también).
             </p>

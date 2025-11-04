@@ -1,29 +1,38 @@
-from pydantic import BaseModel, Field
+# app/schemas/product.py
+
 from typing import Optional, List
+from pydantic import BaseModel, Field
+
 
 class ProductBase(BaseModel):
     title: str = Field(..., min_length=1, max_length=120)
     description: str = Field(..., min_length=1, max_length=2000)
 
+
 class ProductCreate(ProductBase):
-    # Las imágenes vendrán por multipart (UploadFile), así que aquí no van
+    # Las imágenes se reciben por multipart (UploadFile) en el router, no aquí.
     pass
+
 
 class ProductUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=120)
     description: Optional[str] = Field(None, min_length=1, max_length=2000)
     is_active: Optional[bool] = None
 
+
 class ProductImageRead(BaseModel):
     id: int
     url: str
+
     class Config:
-        from_attributes = True
+        from_attributes = True  # pydantic v2 (antes orm_mode=True)
+
 
 class ProductRead(ProductBase):
     id: int
     owner_id: int
     is_active: bool
-    images: List[ProductImageRead] = []
+    images: List[ProductImageRead] = Field(default_factory=list)
+
     class Config:
         from_attributes = True

@@ -67,7 +67,7 @@ export default function SiteHeader({ variant = "public", onLogout }) {
               Inicio
             </NavLink>
             <NavLink
-              to="/chat"
+              to="/likes"
               className={({ isActive }) =>
                 `${linkBase} ${isActive ? linkActive : "text-neutral-700"}`
               }
