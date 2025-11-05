@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime 
+from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime
 from sqlalchemy import String, Text, ForeignKey, Boolean, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from ..core.db import Base
+
 
 class User(Base):
     __tablename__ = "users"
@@ -43,3 +44,11 @@ class User(Base):
 
     # Relación existente (no la tocamos)
     products = relationship("Product", back_populates="owner")
+
+    # 🔹 NUEVO: contraparte de ProductLike.user (NO rompe nada más)
+    product_likes: Mapped[list["ProductLike"]] = relationship(
+        "ProductLike",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )

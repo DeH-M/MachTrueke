@@ -63,6 +63,15 @@ def _to_read_schema(p: Product, request: Request) -> ProductRead:
         ],
     )
 
+def _first_image_url(p: Product, request: Request) -> Optional[str]:
+    """
+    Devuelve la URL absoluta de la primera imagen, si existe.
+    """
+    if not p or not p.images:
+        return None
+    # p.images puede ser lista de ProductImage (ORM) con .url relativa
+    return _abs_url(p.images[0].url, request)
+
 
 # ---------- Listado público (solo activos) + búsqueda y paginación ----------
 @router.get("/", response_model=List[ProductRead])
@@ -258,6 +267,110 @@ def delete_product(
     if p.owner_id != current_user.id:
         raise HTTPException(status_code=403, detail="No puedes eliminar este producto")
 
-    p.is_active = False
+    # --- HARD DELETE sin tocar nada más del archivo ---
+    # 1) Borrar archivos físicos (si existen)
+    try:
+        # borra todas las imágenes del producto
+        for img in list(p.images or []):
+            fp = (BASE_DIR / str(img.url).lstrip("/")).resolve()
+            try:
+                if fp.exists():
+                    fp.unlink()
+            except Exception:
+                pass
+
+        # borra la carpeta del producto (si queda vacía o aunque tenga restos)
+        product_folder = PRODUCTS_DIR / str(p.id)
+        try:
+            if product_folder.exists():
+                shutil.rmtree(product_folder, ignore_errors=True)
+        except Exception:
+            pass
+    except Exception:
+        # no interrumpimos el borrado de BD por errores de archivo
+        pass
+
+    # 2) Borrar el producto en BD (likes e imágenes se van en cascada)
+    db.delete(p)
     db.commit()
     return None
+
+
+# =====================================================================
+# === NUEVO: endpoints auxiliares para likes / listados ligeros ========
+# =====================================================================
+
+@router.get("/check/{product_id}")
+def check_product_status(
+    product_id: int = FPath(..., ge=1),
+    db: Session = Depends(get_db),
+):
+    """
+    Devuelve si el producto existe y si está activo.
+    Útil para validar likes guardados en el cliente.
+    """
+    p = db.query(Product).get(product_id)
+    if not p:
+        return {"exists": False, "active": False}
+    return {"exists": True, "active": bool(p.is_active)}
+
+
+@router.get("/mini/{product_id}")
+def get_product_mini(
+    request: Request,
+    product_id: int = FPath(..., ge=1),
+    db: Session = Depends(get_db),
+):
+    """
+    Devuelve una tarjeta mínima para pintar en 'likes' sin descargar todo.
+    """
+    p = db.query(Product).get(product_id)
+    if not p or not p.is_active:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
+    return {
+        "id": p.id,
+        "title": p.title,
+        "cover": _first_image_url(p, request),
+        "is_active": p.is_active,
+        "owner_id": p.owner_id,
+    }
+
+
+@router.get("/mini-batch")
+def get_products_mini_batch(
+    request: Request,
+    ids: str = Query(..., description="Lista de IDs separados por coma, ej: 1,2,3"),
+    db: Session = Depends(get_db),
+):
+    """
+    Resuelve varias 'tarjetas mínimas' en un solo request.
+    Ignora silenciosamente los que no existan o no estén activos.
+    """
+    try:
+        id_list = [int(x.strip()) for x in ids.split(",") if x.strip()]
+    except Exception:
+        raise HTTPException(status_code=400, detail="Parámetro 'ids' inválido")
+
+    if not id_list:
+        return []
+
+    products = (
+        db.query(Product)
+        .filter(Product.id.in_(id_list), Product.is_active.is_(True))
+        .all()
+    )
+    # Mantener orden aproximado según id_list
+    by_id = {p.id: p for p in products}
+    result = []
+    for pid in id_list:
+        p = by_id.get(pid)
+        if not p:
+            continue
+        result.append({
+            "id": p.id,
+            "title": p.title,
+            "cover": _first_image_url(p, request),
+            "is_active": p.is_active,
+            "owner_id": p.owner_id,
+        })
+    return result

@@ -9,6 +9,7 @@
 //  DELETE  /{product_id}/images/{image_id} -> borrar imagen
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const PRODUCTS_PREFIX = import.meta.env.VITE_PRODUCTS_PREFIX || "/api/products";
 const USE_MOCK = import.meta.env.VITE_USE_MOCK === "1";
 
 /* ---------------- Helpers HTTP ---------------- */
@@ -18,7 +19,8 @@ function authHeaders(extra = {}) {
 }
 
 async function http(path, { method = "GET", body, headers } = {}) {
-  const res = await fetch(`${API_URL}${path}`, {
+  // 🔧 Aquí está el único cambio (se añadió PRODUCTS_PREFIX)
+  const res = await fetch(`${API_URL}${PRODUCTS_PREFIX}${path}`, {
     method,
     headers: {
       ...(body instanceof FormData ? {} : { "Content-Type": "application/json" }),
@@ -26,13 +28,14 @@ async function http(path, { method = "GET", body, headers } = {}) {
     },
     body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
   });
+
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
     throw new Error(txt || `Error ${res.status}`);
   }
+
   return res.status === 204 ? null : res.json();
 }
-
 /* ---------------- Normalización UI <-> API ---------------- */
 // UI espera:
 //  { id: string, title, description, owner_id, visible, images: string[] }
@@ -41,7 +44,9 @@ function toUI(apiProduct) {
 
   // apiProduct.images puede ser [{id,url}] o ["url", ...]
   const images = Array.isArray(apiProduct.images)
-    ? apiProduct.images.map((img) => (typeof img === "object" && img !== null ? img.url : img)).filter(Boolean)
+    ? apiProduct.images
+        .map((img) => (typeof img === "object" && img !== null ? img.url : img))
+        .filter(Boolean)
     : [];
 
   return {
@@ -80,6 +85,48 @@ let MOCK = Array.from({ length: 6 }).map((_, i) => ({
 
 /* ---------------- API ---------------- */
 export const productsApi = {
+  // 👉 NUEVO: listado público para Inicio
+  // GET /
+  // Devuelve { items: ProductUI[] }
+  async listPublic({ page = 1, limit = 24, q = "", campus = "", onlyActive = true } = {}) {
+    if (USE_MOCK) {
+      await mockDelay();
+      let items = [...MOCK];
+      if (onlyActive) items = items.filter((p) => p.is_active);
+      if (q) {
+        const ql = q.toLowerCase();
+        items = items.filter(
+          (p) =>
+            (p.title || "").toLowerCase().includes(ql) ||
+            (p.description || "").toLowerCase().includes(ql)
+        );
+      }
+      // paginado simple en mock
+      const start = (page - 1) * limit;
+      const slice = items.slice(start, start + limit).map(toUI);
+      return { items: slice };
+    }
+
+    const params = new URLSearchParams();
+    // Si tu backend usa offset/limit en vez de page/limit, cambia a:
+    // params.set("offset", (page - 1) * limit);
+    // params.set("limit", limit);
+    params.set("page", page);
+    params.set("limit", limit);
+
+    if (onlyActive) {
+      // Ajusta a visible=true si tu backend usa ese nombre
+      params.set("is_active", "true");
+      // params.set("visible", "true");
+    }
+    if (q) params.set("q", q);
+    if (campus) params.set("campus", campus);
+
+    const data = await http(`/?${params.toString()}`);
+    const rows = Array.isArray(data) ? data : data.items || [];
+    return { items: rows.map(toUI) };
+  },
+
   // GET /me/mine
   async listMine() {
     if (USE_MOCK) {

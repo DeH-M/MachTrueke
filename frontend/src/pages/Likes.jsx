@@ -20,6 +20,54 @@ import { likesApi } from "../services/likesApi";
  *   }
  */
 
+// === AGREGADO: helpers para cubrir portada y dueños ===
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const absUrl = (p) => (!p ? "" : /^https?:\/\//i.test(p) || p.startsWith("blob:") ? p : `${API_URL}${p.startsWith("/") ? "" : "/"}${p}`);
+const firstCover = (images) => {
+  if (!Array.isArray(images) || !images.length) return "";
+  const u0 = images[0];
+  const url = typeof u0 === "string" ? u0 : u0?.url;
+  return absUrl(url || "");
+};
+
+// Carga mini-perfil público de un usuario (id, name, avatar)
+// Endpoint sugerido: GET /api/users/{id} (o /users/{id}/public). Ajusta si tu backend usa otro.
+async function fetchUserPublic(userId) {
+  const token = localStorage.getItem("token");
+  const res = await fetch(`${API_URL}/api/users/${userId}`, {
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const u = await res.json();
+  // Normalizamos posibles nombres de campo
+  return {
+    id: String(u.id ?? userId),
+    name: u.full_name || u.fullName || u.username || u.name || "Usuario",
+    avatar: absUrl(u.avatar_url || u.avatar || ""),
+  };
+}
+
+// === AGREGADO: normalizador para items del backend (portada y tipo) ===
+const normalizeLikeItem = (it) => {
+  if (it?.product) {
+    const p = it.product;
+    return {
+      ...it,
+      type: it.type || "product",
+      product: {
+        id: p.id,
+        title: p.title,
+        cover: p.cover || firstCover(p.images),
+        owner_id: p.owner_id, // lo usamos para traer dueño si falta
+      },
+      owner: it.owner, // si backend ya lo manda, lo respetamos
+    };
+  }
+  return it;
+};
+
 export default function Likes() {
   const [loading, setLoading] = useState(true);
   const [people, setPeople] = useState([]);     // [{ id, name, avatar, last }]
@@ -38,10 +86,35 @@ export default function Likes() {
         const { items } = await likesApi.listMine(); // { items: [] }
         if (!alive) return;
 
+        // === AGREGADO (Paso 1): normalizar items
+        const normItems = (items || []).map(normalizeLikeItem);
+
+        // === AGREGADO (Paso 2): armar un map de dueños faltantes
+        const missingOwnerIds = Array.from(
+          new Set(
+            normItems
+              .filter(it => it?.type === "product" && !it.owner && it.product?.owner_id)
+              .map(it => String(it.product.owner_id))
+          )
+        );
+
+        const ownersMap = {};
+        for (const uid of missingOwnerIds) {
+          try {
+            ownersMap[uid] = await fetchUserPublic(uid);
+          } catch {
+            ownersMap[uid] = {
+              id: uid,
+              name: "Usuario",
+              avatar: "https://i.pravatar.cc/100?img=2",
+            };
+          }
+        }
+
         const peopleList = [];
         const productList = [];
 
-        (items || []).forEach((it) => {
+        (normItems || []).forEach((it) => {
           if (it?.type === "person" && it.person) {
             peopleList.push({
               id: String(it.person.id),
@@ -50,17 +123,24 @@ export default function Likes() {
               last: it.person.last || it.note || "",
             });
           } else if (it?.type === "product" && it.product) {
+            // === AGREGADO (Paso 3): completar owner si no vino en backend
+            const ownerId = it.owner?.id || it.product?.owner_id;
+            const owner =
+              it.owner ||
+              (ownerId ? ownersMap[String(ownerId)] : null) ||
+              {
+                id: "",
+                name: "Usuario",
+                avatar: "https://i.pravatar.cc/100?img=2",
+              };
+
             productList.push({
               id: String(it.product.id),
               title: it.product.title || "Producto",
               cover:
                 it.product.cover ||
                 "https://images.unsplash.com/photo-1588345921523-c2dcdb7f1dcd?q=80&w=1000&auto=format&fit=crop",
-              owner: {
-                id: it.owner?.id ? String(it.owner.id) : "",
-                name: it.owner?.name || "Usuario",
-                avatar: it.owner?.avatar || "https://i.pravatar.cc/100?img=2",
-              },
+              owner,
               note: it.note || "",
             });
           }
