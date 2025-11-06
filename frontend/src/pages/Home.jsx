@@ -3,31 +3,40 @@ import { useEffect, useMemo, useState } from "react";
 import { useSwipeable } from "react-swipeable";
 import { useLikes } from "../store/likesStore";
 import { likesApi } from "../services/likesApi";
+import { productsApi } from "../services/productsApi";
+import useAuth from "../store/authStore"; // ✅ para conocer mi user.id
 
-// Si ya tienes este valor centralizado, puedes importarlo desde un helper.
-// Aquí lo leemos directo del .env para no tocar otros archivos.
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+// Fallback estable para desarrollo
+const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+
+// helper para URLs relativas del backend
+const absUrl = (p) => {
+  if (!p) return "";
+  if (/^https?:\/\//i.test(p) || p.startsWith("blob:")) return p;
+  return `${API_URL}${p.startsWith("/") ? "" : "/"}${p}`;
+};
 
 /* -------- helper: normaliza ProductRead del backend a la UI de esta tarjeta -------- */
 function toCard(p) {
-  // p.images puede venir como [{id,url}] -> convertimos a array de urls
   const imageUrls = Array.isArray(p.images)
-    ? p.images.map((img) => (typeof img === "string" ? img : img?.url)).filter(Boolean)
+    ? p.images
+        .map((img) => (typeof img === "string" ? img : img?.url))
+        .filter(Boolean)
     : [];
 
-  // El backend actual no devuelve datos del owner (solo owner_id).
-  // Mantenemos compatibilidad: si no hay owner, ocultamos ese bloque.
   return {
     id: String(p.id),
     title: p.title ?? "",
     description: p.description ?? "",
-    images: imageUrls,            // array de URLs absolutas (backend ya las hace absolutas)
-    owner: null,                  // { id, name, avatar } si más adelante lo agregas en el backend
+    images: imageUrls,
+    owner: p.owner ?? null,
+    owner_id: p.owner_id ?? null, // ✅ lo guardamos para poder filtrar “mis” productos
   };
 }
 
 export default function Home() {
-  const [queue, setQueue] = useState([]);  // cola de productos para swipe
+  const { user } = useAuth(); // ✅ necesito user?.id para ocultar mis productos
+  const [queue, setQueue] = useState([]); // cola de productos para swipe
   const [idx, setIdx] = useState(0);
   const card = queue[idx];
 
@@ -37,6 +46,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [errMsg, setErrMsg] = useState("");
 
+  const [likedIds, setLikedIds] = useState([]); // ✅ ids ya likeados
   const { addLocalMatch } = useLikes();
   const THRESHOLD = 100;
 
@@ -48,21 +58,31 @@ export default function Home() {
         setLoading(true);
         setErrMsg("");
 
-        // GET /?limit=&offset=
-        const res = await fetch(`${API_URL}/?limit=50&offset=0`, {
-          headers: {
-            // si tu lista pública no requiere token, esto es suficiente;
-            // si sí lo requiere, añade Authorization: Bearer <token> aquí
-            "Content-Type": "application/json",
-          },
-        });
-        if (!res.ok) throw new Error(await res.text());
+        // Traemos en paralelo productos e ids likeados
+        const [{ items }, idsResp] = await Promise.all([
+          productsApi.listPublic({ page: 1, limit: 50 }),
+          likesApi.myLikedIds().catch(() => ({ product_ids: [] })), // si falla, continúa
+        ]);
 
-        const data = await res.json(); // se espera un array de ProductRead
-        const items = Array.isArray(data) ? data.map(toCard) : [];
+        const cards = (items || []).map(toCard);
+        const ids = idsResp?.product_ids || [];
+
         if (!alive) return;
 
-        setQueue(items);
+        // ✅ Filtro 1: quita mis productos (usa owner_id o, si no viene, owner.id)
+        const notMine = user?.id
+          ? cards.filter(
+              (c) => String(c.owner_id ?? c.owner?.id ?? "") !== String(user.id)
+            )
+          : cards;
+
+        // ✅ Filtro 2: quita los ya likeados
+        const notLiked = ids.length
+          ? notMine.filter((c) => !ids.includes(Number(c.id)))
+          : notMine;
+
+        setLikedIds(ids);
+        setQueue(notLiked);
         setIdx(0);
       } catch (e) {
         console.error(e);
@@ -75,7 +95,7 @@ export default function Home() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [user?.id]);
 
   /* -------------------- navegación/animación -------------------- */
   const resetDrag = () => setDragX(0);
@@ -88,7 +108,6 @@ export default function Home() {
 
   const onReject = () => {
     if (!card) return;
-    // Si más adelante hay endpoint de rechazo, puedes llamarlo aquí.
     setIsAnimating(true);
     setDragX(-window.innerWidth);
     setTimeout(goNext, 200);
@@ -96,13 +115,25 @@ export default function Home() {
 
   const onMatch = async () => {
     if (!card) return;
+
+    // 🔒 Seguridad extra en UI: si por cualquier razón el mío pasó el filtro, NO hago match
+    if (user?.id && String(card.owner_id ?? card.owner?.id ?? "") === String(user.id)) {
+      onReject();
+      return;
+    }
+
     try {
-      const created = await likesApi.create(card.id);
-      // Refresca store local (para la vista de Likes)
+      // ✅ aseguro number para el backend
+      const created = await likesApi.create(Number(card.id));
+
+      // ✅ actualizo ids likeados locales para que ya no reaparezca
+      setLikedIds((prev) => (prev.includes(Number(card.id)) ? prev : [...prev, Number(card.id)]));
+
+      // ✅ refresco store local (para la vista de Likes)
       addLocalMatch({
         id: created.id || crypto.randomUUID(),
         product: { id: card.id, title: card.title, cover: card.images?.[0] },
-        owner: card.owner, // hoy puede ser null; cuando tengas owner real, se mostrará
+        owner: card.owner || null,
         note: created.note || "Match",
         created_at: created.created_at || new Date().toISOString(),
       });
@@ -112,7 +143,7 @@ export default function Home() {
       setTimeout(goNext, 200);
     } catch (e) {
       console.error(e);
-      alert("No se pudo crear el match");
+      alert(e?.message || "No se pudo crear el match");
       setIsAnimating(false);
       resetDrag();
     }
@@ -173,7 +204,7 @@ export default function Home() {
                 {/* Imagen */}
                 <div className="relative aspect-square bg-neutral-100">
                   <img
-                    src={card.images?.[0]}
+                    src={absUrl(card.images?.[0])}
                     alt={card.title}
                     className="w-full h-full object-cover"
                     draggable={false}
@@ -203,7 +234,7 @@ export default function Home() {
                   {card.owner && (
                     <div className="flex items-center gap-2 mt-2">
                       <img
-                        src={card.owner.avatar}
+                        src={absUrl(card.owner.avatar)}
                         alt={card.owner.name}
                         className="h-7 w-7 rounded-full object-cover ring-1 ring-black/5"
                       />
