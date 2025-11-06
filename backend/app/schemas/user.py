@@ -14,6 +14,7 @@ class UserBase(BaseModel):
     model_config = {"from_attributes": True}
 
 
+
 # ==============================================
 # 🔹 CREACIÓN DE USUARIO (registro)
 # ==============================================
@@ -55,3 +56,17 @@ class UserUpdate(BaseModel):
 class ChangePasswordIn(BaseModel):
     old_password: str = Field(min_length=6)
     new_password: str = Field(min_length=6)
+
+
+# ==============================================
+# 🔹 PERFIL PÚBLICO MINIMAL (para evitar ciclos en anidaciones)
+#    Úsalo en otros esquemas (p. ej. ProductRead.owner)
+# ==============================================
+class UserPublic(BaseModel):
+    id: int
+    username: str
+    full_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+

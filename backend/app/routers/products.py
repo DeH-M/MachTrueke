@@ -24,13 +24,15 @@ from ..models.product import Product, ProductImage
 from ..models.user import User
 from ..schemas.product import ProductRead, ProductUpdate, ProductImageRead
 
+
+router = APIRouter(prefix="/api/products", tags=["products"])
+
 # --- Paths (usar ruta ABSOLUTA coherente con main.py) ---
 BASE_DIR = Path(__file__).resolve().parents[2]   # .../backend
 MEDIA_ROOT = BASE_DIR / "media"
 PRODUCTS_DIR = MEDIA_ROOT / "products"
 PRODUCTS_DIR.mkdir(parents=True, exist_ok=True)
 
-router = APIRouter()
 
 
 # ------------------------ helpers ------------------------
@@ -159,6 +161,23 @@ def list_my_products(
         .all()
     )
     return [_to_read_schema(p, request) for p in products]
+
+
+# ---------- Mis productos (formato { items: Product[] }) ----------
+@router.get("/me")
+def list_my_products_items(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    products = (
+        db.query(Product)
+        .filter(Product.owner_id == current_user.id)
+        .order_by(Product.id.desc())
+        .all()
+    )
+    items = [_to_read_schema(p, request) for p in products]
+    return {"items": items}
 
 
 # ---------- Update (patch) ----------
