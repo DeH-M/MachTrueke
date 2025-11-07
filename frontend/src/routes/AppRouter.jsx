@@ -14,6 +14,17 @@ import Profile from "../pages/profile/Profile";
 import ProfileProducts from "../pages/profile/ProfileProducts";
 import ProfileSettings from "../pages/profile/ProfileSettings";
 
+import ChatDock from "../components/ChatDock";
+export default function AppRouter() {
+  return (
+    <>
+      {/* ...tus rutas/layouts... */}
+      <ChatDock />
+    </>
+  );
+}
+
+
 export const router = createBrowserRouter([
   // Páginas públicas (auth)
   {

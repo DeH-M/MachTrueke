@@ -2,6 +2,7 @@
 
 from typing import Optional, List
 from pydantic import BaseModel, Field
+from .user import UserPublic   # 🔹 agregado para incluir info básica del dueño
 
 
 class ProductBase(BaseModel):
@@ -33,6 +34,7 @@ class ProductRead(ProductBase):
     owner_id: int
     is_active: bool
     images: List[ProductImageRead] = Field(default_factory=list)
+    owner: Optional[UserPublic] = None   # 🔹 agregado para incluir datos del dueño
 
     class Config:
         from_attributes = True

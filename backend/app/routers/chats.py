@@ -1,178 +1,453 @@
-from __future__ import annotations
-from typing import List, Optional
-
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import or_, and_, desc
+# backend/app/routers/chats.py
+from typing import Optional, List
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
+from sqlalchemy import func, and_
+# 🔹 NUEVO: imports para subqueries select() y fallback SQL
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
+import asyncio  # para disparar broadcast async en background
 
-from ..core.db import get_db
-from ..core.security import get_current_user
+# Deps y usuario actual
+from ..deps import get_current_user, get_db
 from ..models.user import User
-from ..models.chat import Conversation, Message
-from ..models.product import Product
-from ..schemas.chat import (
-    ConversationStart, ConversationRead,
-    MessageCreate, MessageRead
-)
-
-router = APIRouter(prefix="/chats", tags=["chats"])
 
 
-def _order_pair(a: int, b: int) -> tuple[int, int]:
-    return (a, b) if a < b else (b, a)
+
+# (Cuando tengas los modelos reales, descomenta y usa)
+# from ..models.chat import Chat, ChatParticipant
+# from ..models.message import Message
+
+# Esquemas Pydantic para respuestas/entradas
+from ..schemas.chat import ChatRead, OpenThreadIn, MessageRead, SendTextIn
+
+# =======================
+# NUEVO: WebSocket
+# =======================
+from fastapi import WebSocket, WebSocketDisconnect
+from app.core.ws_manager import manager
+
+# =======================
+# NUEVO: Modelos reales
+# =======================
+from ..models.chat import Conversation, ConversationParticipant, Message
+
+router = APIRouter(prefix="/api/chats", tags=["chats"])
 
 
-@router.post("/start", response_model=ConversationRead)
-def start_conversation(
-    payload: ConversationStart,
-    db: Session = Depends(get_db),
+# ===================================================================
+# === NUEVO: helpers HTTP + WebSocket para salas (room_id estable) ===
+# ===================================================================
+def _room_id_for_users(a: int, b: int, product_id: Optional[int]) -> str:
+    """
+    Genera un room_id estable y simétrico entre dos usuarios.
+    Si hay product_id, lo incorpora para hilos por producto.
+    (Tu tabla Conversation no tiene product_id; lo incluimos solo en el room_id.)
+    """
+    u1, u2 = sorted([int(a), int(b)])
+    if product_id:
+        return f"u{u1}-u{u2}-p{int(product_id)}"
+    return f"u{u1}-u{u2}"
+
+
+@router.get("/room-id")
+def get_room_id(
+    peer_id: int,
+    product_id: Optional[int] = None,
     me: User = Depends(get_current_user),
 ):
-    if payload.other_user_id == me.id:
-        raise HTTPException(400, "No puedes chatear contigo mismo")
+    """
+    Devuelve el room_id WS para hablar con 'peer_id' (y opcionalmente por producto).
+    Útil para que el frontend construya ws://.../api/chats/ws/{room_id}
+    """
+    return {"room_id": _room_id_for_users(me.id, peer_id, product_id)}
 
-    product_id = None
-    if payload.product_id is not None:
-        product = db.get(Product, payload.product_id)
-        if not product:
-            raise HTTPException(404, "Producto no encontrado")
-        product_id = product.id
 
-    u1, u2 = _order_pair(me.id, payload.other_user_id)
+@router.websocket("/ws/{room_id}")
+async def websocket_chat(ws: WebSocket, room_id: str):
+    """
+    WebSocket simple por sala:
+      - Conecta al usuario en la sala `room_id`
+      - Reenvía a todos los conectados en esa sala cualquier texto recibido
+    El frontend solo necesita abrir: ws://<host>/api/chats/ws/{room_id}
+    """
+    await manager.connect(room_id, ws)
+    try:
+        while True:
+            data = await ws.receive_text()
+            await manager.broadcast(room_id, data)
+    except WebSocketDisconnect:
+        manager.disconnect(room_id, ws)
 
+
+# =======================
+# NUEVO: helper de persistencia
+# =======================
+def _get_or_create_conversation(db: Session, me_id: int, peer_id: int) -> Conversation:
+    """
+    Busca una conversación entre 'me_id' y 'peer_id' (exactamente esos dos).
+    Si no existe, la crea con ambos participantes.
+    """
+    # Conversaciones donde participo yo
+    my_conv_ids = (
+        db.query(ConversationParticipant.conversation_id)
+        .filter(ConversationParticipant.user_id == me_id)
+        .subquery()
+    )
+    # De esas, filtra las que también tenga el peer
     conv = (
         db.query(Conversation)
+        .join(ConversationParticipant, Conversation.id == ConversationParticipant.conversation_id)
         .filter(
-            Conversation.user1_id == u1,
-            Conversation.user2_id == u2,
-            Conversation.product_id.is_(product_id),
+            # 🔹 select() para evitar SAWarning (IN con subquery)
+            Conversation.id.in_(select(my_conv_ids.c.conversation_id)),
+            ConversationParticipant.user_id == peer_id,
         )
         .first()
     )
-    if not conv:
-        conv = Conversation(user1_id=u1, user2_id=u2, product_id=product_id)
-        db.add(conv)
-        db.commit()
-        db.refresh(conv)
 
-    if me.id == conv.user1_id and conv.hidden_for_user1:
-        conv.hidden_for_user1 = False
-        db.commit()
-    elif me.id == conv.user2_id and conv.hidden_for_user2:
-        conv.hidden_for_user2 = False
-        db.commit()
+    if conv:
+        return conv
 
-    return _conversation_for_read(db, conv, me.id)
+    # Crear nueva conversación con ambos participantes
+    conv = Conversation()
+    db.add(conv)
+    try:
+        db.flush()  # obtiene conv.id sin cerrar transacción
+    except IntegrityError:
+        # 🔹 Fallback: tu tabla conversations puede exigir user1_id/user2_id NOT NULL
+        db.rollback()
+        # Intento 1: con flags hidden_* (si existen y son NOT NULL)
+        try:
+            conv_id = db.execute(
+                text(
+                    "insert into conversations (user1_id, user2_id, hidden_for_user1, hidden_for_user2) "
+                    "values (:a, :b, false, false) returning id"
+                ),
+                {"a": me_id, "b": peer_id},
+            ).scalar_one()
+        except Exception:
+            # Intento 2: solo user1_id/user2_id (por si tu tabla no tiene los hidden_*)
+            conv_id = db.execute(
+                text(
+                    "insert into conversations (user1_id, user2_id) "
+                    "values (:a, :b) returning id"
+                ),
+                {"a": me_id, "b": peer_id},
+            ).scalar_one()
+
+        conv = db.query(Conversation).get(conv_id)
+
+    db.add_all(
+        [
+            ConversationParticipant(conversation_id=conv.id, user_id=me_id),
+            ConversationParticipant(conversation_id=conv.id, user_id=peer_id),
+        ]
+    )
+    db.commit()
+    db.refresh(conv)
+    return conv
 
 
-@router.get("", response_model=List[ConversationRead])
-def list_my_conversations(
+@router.get("", response_model=List[ChatRead])
+def list_threads(
     db: Session = Depends(get_db),
     me: User = Depends(get_current_user),
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0),
 ):
-    base = db.query(Conversation).filter(
-        or_(Conversation.user1_id == me.id, Conversation.user2_id == me.id)
+    """
+    Lista hilos del usuario autenticado.
+    (MOCK por ahora: regresar lista vacía hasta conectar con DB)
+    """
+    # TODO: Reemplazar por query real de hilos del usuario "me"
+    # --------------------- NUEVO: implementación mínima ---------------------
+    # Todas las conversaciones donde participa 'me'
+    my_convs = (
+        db.query(Conversation.id)
+        .join(ConversationParticipant)
+        .filter(ConversationParticipant.user_id == me.id)
+        .subquery()
     )
 
-    base = base.filter(
-        or_(
-            and_(Conversation.user1_id == me.id, Conversation.hidden_for_user1.is_(False)),
-            and_(Conversation.user2_id == me.id, Conversation.hidden_for_user2.is_(False)),
+    # Último mensaje por conversación
+    last_msg_sub = (
+        db.query(
+            Message.conversation_id.label("cid"),
+            func.max(Message.id).label("last_id"),
         )
-    ).order_by(desc(Conversation.updated_at)).offset(offset).limit(limit)
+        # 🔹 select() para evitar SAWarning (IN con subquery)
+        .filter(Message.conversation_id.in_(select(my_convs.c.id)))
+        .group_by(Message.conversation_id)
+        .subquery()
+    )
 
-    conversations = base.all()
-    return [_conversation_for_read(db, c, me.id) for c in conversations]
-
-
-@router.get("/{conversation_id}/messages", response_model=List[MessageRead])
-def get_messages(
-    conversation_id: int,
-    db: Session = Depends(get_db),
-    me: User = Depends(get_current_user),
-):
-    conv = db.get(Conversation, conversation_id)
-    if not conv or (me.id not in (conv.user1_id, conv.user2_id)):
-        raise HTTPException(404, "Conversación no encontrada")
-
-    rows = (
-        db.query(Message)
-        .filter(Message.conversation_id == conv.id, Message.is_deleted_by_sender.is_(False))
-        .order_by(Message.id)
+    # Trae peer y último mensaje (si existe)
+    results = (
+        db.query(
+            Conversation.id.label("cid"),
+            User.id.label("peer_id"),
+            User.full_name.label("peer_name"),
+            User.avatar_url.label("peer_avatar"),
+            Message.text.label("last_text"),
+            Message.created_at.label("last_at"),
+        )
+        .join(ConversationParticipant, Conversation.id == ConversationParticipant.conversation_id)
+        .join(User, and_(User.id == ConversationParticipant.user_id, User.id != me.id))
+        .outerjoin(last_msg_sub, last_msg_sub.c.cid == Conversation.id)
+        .outerjoin(Message, and_(Message.id == last_msg_sub.c.last_id))
+        # 🔹 select() para evitar SAWarning (IN con subquery)
+        .filter(Conversation.id.in_(select(my_convs.c.id)))
         .all()
     )
 
-    # marcar como leídos
-    for m in rows:
-        if m.sender_id != me.id and m.read_at is None:
-            m.read_at = m.created_at
-    db.commit()
-    return rows
+    items: List[ChatRead] = []
+    for r in results:
+        items.append(
+            ChatRead(
+                id=str(r.cid),
+                peer={"id": int(r.peer_id), "name": r.peer_name, "avatar_url": r.peer_avatar},
+                last_message_at=r.last_at,
+                last_message_text=r.last_text or "",
+                unread_count=0,  # pendiente si luego agregas "read_at" por usuario
+                product_id=None,
+                thread=None,
+            )
+        )
+    return items
+    # ------------------- FIN NUEVO -------------------
 
 
-@router.post("/{conversation_id}/messages", response_model=MessageRead, status_code=201)
-def send_message(
-    conversation_id: int,
-    payload: MessageCreate,
+@router.post("/open", response_model=ChatRead)
+def open_thread(
+    payload: OpenThreadIn,
     db: Session = Depends(get_db),
     me: User = Depends(get_current_user),
 ):
-    conv = db.get(Conversation, conversation_id)
-    if not conv or (me.id not in (conv.user1_id, conv.user2_id)):
-        raise HTTPException(404, "Conversación no encontrada")
+    """
+    Abre (o crea si no existe) un hilo entre 'me' y 'peer_id'.
+    Devuelve el hilo (MOCK mínimo mientras conectas con tus modelos).
+    """
+    peer_id = payload.peer_id
+    product_id = payload.product_id
 
-    msg = Message(conversation_id=conv.id, sender_id=me.id, body=payload.body)
-    db.add(msg)
-    conv.updated_at = None
-    db.commit()
-    db.refresh(msg)
-    return msg
+    if not peer_id:
+        raise HTTPException(status_code=400, detail="peer_id requerido")
+    if peer_id == me.id:
+        raise HTTPException(status_code=400, detail="No puedes chatear contigo misma/o")
 
+    # TODO:
+    # 1) Buscar si ya existe (me <-> peer_id) y (product_id) si aplica.
+    # 2) Si no existe, crear Chat + participantes.
+    # 3) Devolver Chat con último mensaje, unread_count, etc.
 
-@router.delete("/{conversation_id}", status_code=204)
-def hide_conversation(
-    conversation_id: int,
-    db: Session = Depends(get_db),
-    me: User = Depends(get_current_user),
-):
-    conv = db.get(Conversation, conversation_id)
-    if not conv or (me.id not in (conv.user1_id, conv.user2_id)):
-        raise HTTPException(404, "Conversación no encontrada")
+    # --- NUEVO: busca/crea de verdad ---
+    conv = _get_or_create_conversation(db, me.id, peer_id)
 
-    if me.id == conv.user1_id:
-        conv.hidden_for_user1 = True
-    else:
-        conv.hidden_for_user2 = True
-
-    db.commit()
-    return None
-
-
-def _conversation_for_read(db: Session, conv: Conversation, viewer_id: int) -> ConversationRead:
+    # Peer (para el resumen)
+    peer: User = db.query(User).filter(User.id == peer_id).first()
+    # Último mensaje (si hay)
     last_msg = (
         db.query(Message)
-        .filter(Message.conversation_id == conv.id, Message.is_deleted_by_sender.is_(False))
-        .order_by(desc(Message.id))
+        .filter(Message.conversation_id == conv.id)
+        .order_by(Message.id.desc())
         .first()
     )
-    unread = (
-        db.query(Message)
+
+    return ChatRead(
+        id=str(conv.id),
+        peer={"id": int(peer.id), "name": peer.full_name, "avatar_url": peer.avatar_url} if peer else {"id": int(peer_id), "name": "Usuario", "avatar_url": None},
+        last_message_at=last_msg.created_at if last_msg else None,
+        last_message_text=last_msg.text if last_msg else "",
+        unread_count=0,
+        product_id=product_id,
+        thread=None,
+    )
+
+
+@router.get("/{chat_id}/messages", response_model=List[MessageRead])
+def list_messages(
+    chat_id: str,
+    after: Optional[str] = None,
+    db: Session = Depends(get_db),
+    me: User = Depends(get_current_user),
+):
+    """
+    Lista mensajes de un chat. Param 'after' opcional para paginación.
+    (MOCK: sin mensajes por ahora)
+    """
+    # TODO: filtrar por chat_id y 'after', validar que 'me' pertenece al chat
+    # --------------------- NUEVO: implementación real ----------------------
+    try:
+        conv_id = int(chat_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Chat no válido")
+
+    # Seguridad básica: pertenezco a la conversación
+    belongs = (
+        db.query(ConversationParticipant)
         .filter(
-            Message.conversation_id == conv.id,
-            Message.sender_id != viewer_id,
-            Message.read_at.is_(None),
-            Message.is_deleted_by_sender.is_(False),
+            ConversationParticipant.conversation_id == conv_id,
+            ConversationParticipant.user_id == me.id,
         )
-        .count()
+        .first()
     )
-    from ..schemas.chat import ConversationRead
-    return ConversationRead(
-        id=conv.id,
-        product_id=conv.product_id,
-        user1_id=conv.user1_id,
-        user2_id=conv.user2_id,
-        last_message=last_msg,
-        unread_count=unread,
+    if not belongs:
+        raise HTTPException(status_code=403, detail="No perteneces a este chat")
+
+    q = db.query(Message).filter(Message.conversation_id == conv_id)
+    if after:
+        try:
+            after_id = int(after)
+            q = q.filter(Message.id > after_id)
+        except ValueError:
+            pass
+
+    msgs = q.order_by(Message.id.asc()).all()
+
+    out: List[MessageRead] = []
+    for m in msgs:
+        out.append(
+            MessageRead(
+                id=str(m.id),
+                from_me=(m.sender_id == me.id),
+                type=m.type or "text",
+                text=m.text,
+                url=m.image_url,
+                name=None,
+                at=m.created_at,
+            )
+        )
+    return out
+    # ------------------- FIN NUEVO -------------------
+
+
+@router.post("/{chat_id}/messages", response_model=MessageRead)
+def send_text(
+    chat_id: str,
+    data: SendTextIn,
+    db: Session = Depends(get_db),
+    me: User = Depends(get_current_user),
+):
+    """
+    Envía un mensaje de texto al chat.
+    (MOCK: devuelve el mensaje sin persistir)
+    """
+    if not data.text or not data.text.strip():
+        raise HTTPException(status_code=400, detail="texto vacío")
+
+    # TODO: insertar Message real en DB y devolverlo
+    # --------------------- NUEVO: persistencia + broadcast ------------------
+    try:
+        conv_id = int(chat_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Chat no válido")
+
+    # seguridad: pertenezco a la conversación
+    belongs = (
+        db.query(ConversationParticipant)
+        .filter(
+            ConversationParticipant.conversation_id == conv_id,
+            ConversationParticipant.user_id == me.id,
+        )
+        .first()
     )
+    if not belongs:
+        raise HTTPException(status_code=403, detail="No perteneces a este chat")
+
+    m = Message(
+        conversation_id=conv_id,
+        sender_id=me.id,
+        type="text",
+        text=data.text.strip(),
+        image_url=None,
+        #  * Blindaje por si en alguna BD no están bien los defaults
+        is_deleted_by_sender=False,
+        is_deleted_by_receiver=False,
+    )
+    db.add(m)
+    db.commit()
+    db.refresh(m)
+
+    # Broadcast WS (opcional pero útil): sala basada en ambos usuarios
+    # Descubre el peer para construir el mismo room_id que usa el front
+    parts = (
+        db.query(ConversationParticipant.user_id)
+        .filter(ConversationParticipant.conversation_id == conv_id)
+        .all()
+    )
+    uids = [p.user_id for p in parts]
+    peer_id = next((u for u in uids if u != me.id), me.id)
+    room_id = _room_id_for_users(me.id, peer_id, product_id=None)
+
+    # Enviar un JSON simple (el front decide cómo renderizar)
+    import json
+    try:
+        # si manager.broadcast es async
+        asyncio.create_task(manager.broadcast(room_id, json.dumps({
+            "id": str(m.id),
+            "from_me": True,
+            "type": "text",
+            "text": m.text,
+            "at": m.created_at.isoformat() if m.created_at else None,
+        })))
+    except TypeError:
+        # si manager.broadcast es síncrono
+        manager.broadcast(room_id, json.dumps({
+            "id": str(m.id),
+            "from_me": True,
+            "type": "text",
+            "text": m.text,
+            "at": m.created_at.isoformat() if m.created_at else None,
+        }))
+
+    return MessageRead(
+        id=str(m.id),
+        from_me=True,
+        type="text",
+        text=m.text,
+        url=None,
+        name=None,
+        at=m.created_at,
+    )
+    # ------------------- FIN NUEVO -------------------
+
+
+@router.post("/{chat_id}/attachments", response_model=List[MessageRead])
+def send_attachments(
+    chat_id: str,
+    files: List[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+    me: User = Depends(get_current_user),
+):
+    """
+    Sube adjuntos (imágenes) al chat.
+    (MOCK: no guarda archivo, solo devuelve URLs de ejemplo)
+    """
+    # TODO: subir a almacenamiento, guardar mensajes tipo "image" y devolverlos
+    out: List[MessageRead] = []
+    for f in files:
+        out.append(
+            MessageRead(
+                id=f"m-{chat_id}-{f.filename}",
+                from_me=True,
+                type="image",
+                text=None,
+                url=f"/static/uploads/chat/{f.filename}",  # reemplaza por URL real
+                name=f.filename,
+                at=None,
+            )
+        )
+    return out
+
+
+@router.patch("/{chat_id}/hide")
+def hide_thread(
+    chat_id: str,
+    db: Session = Depends(get_db),
+    me: User = Depends(get_current_user),
+):
+    """
+    Oculta un hilo para el usuario actual.
+    (MOCK: solo responde ok)
+    """
+    # TODO: marcar hilo como oculto SOLO para 'me'
+    return {"ok": True}
