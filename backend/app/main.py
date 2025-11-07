@@ -48,6 +48,7 @@ MEDIA_DIR = BASE_DIR / "media"
 (STATIC_DIR / "uploads" / "avatars").mkdir(parents=True, exist_ok=True)
 (STATIC_DIR / "uploads" / "chat").mkdir(parents=True, exist_ok=True)     # <- usado por adjuntos de chat
 (MEDIA_DIR / "products").mkdir(parents=True, exist_ok=True)
+(MEDIA_DIR / "chat").mkdir(parents=True, exist_ok=True)  # 👈 AGREGADO: carpeta para /media/chat/<conversation_id>
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
