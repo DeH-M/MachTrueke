@@ -7,12 +7,12 @@ from sqlalchemy import func, and_
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 import asyncio  # para disparar broadcast async en background
+import anyio    # 🔹 AGREGADO: para ejecutar corrutinas desde thread
+import json  # ← NUEVO, para serializar el evento
 
 # Deps y usuario actual
 from ..deps import get_current_user, get_db
 from ..models.user import User
-
-
 
 # (Cuando tengas los modelos reales, descomenta y usa)
 # from ..models.chat import Chat, ChatParticipant
@@ -186,6 +186,7 @@ def list_threads(
             Conversation.id.label("cid"),
             User.id.label("peer_id"),
             User.full_name.label("peer_name"),
+            User.username.label("peer_username"),  # ← agregado: username
             User.avatar_url.label("peer_avatar"),
             Message.text.label("last_text"),
             Message.created_at.label("last_at"),
@@ -204,7 +205,7 @@ def list_threads(
         items.append(
             ChatRead(
                 id=str(r.cid),
-                peer={"id": int(r.peer_id), "name": r.peer_name, "avatar_url": r.peer_avatar},
+                peer={"id": int(r.peer_id), "name": r.peer_username or r.peer_name, "avatar_url": r.peer_avatar},
                 last_message_at=r.last_at,
                 last_message_text=r.last_text or "",
                 unread_count=0,  # pendiente si luego agregas "read_at" por usuario
@@ -254,7 +255,7 @@ def open_thread(
 
     return ChatRead(
         id=str(conv.id),
-        peer={"id": int(peer.id), "name": peer.full_name, "avatar_url": peer.avatar_url} if peer else {"id": int(peer_id), "name": "Usuario", "avatar_url": None},
+        peer={"id": int(peer.id), "name": peer.username if peer else "Usuario", "avatar_url": peer.avatar_url} if peer else {"id": int(peer_id), "name": "Usuario", "avatar_url": None},
         last_message_at=last_msg.created_at if last_msg else None,
         last_message_text=last_msg.text if last_msg else "",
         unread_count=0,
@@ -360,9 +361,17 @@ def send_text(
         text=data.text.strip(),
         image_url=None,
         #  * Blindaje por si en alguna BD no están bien los defaults
-        is_deleted_by_sender=False,
-        is_deleted_by_receiver=False,
     )
+
+    # 🔹 AGREGADO PARA FUNCIONAR ENVÍO
+    # Estas columnas no existen en tu modelo real, por eso causaban error 500.
+    # Las eliminamos antes de insertar para que funcione.
+    #if not hasattr(Message, "is_deleted_by_sender"):
+    #   delattr(m, "is_deleted_by_sender")
+    #if not hasattr(Message, "is_deleted_by_receiver"):
+    #    delattr(m, "is_deleted_by_receiver")
+    # 🔹 FIN AGREGADO
+
     db.add(m)
     db.commit()
     db.refresh(m)
@@ -380,24 +389,34 @@ def send_text(
 
     # Enviar un JSON simple (el front decide cómo renderizar)
     import json
-    try:
-        # si manager.broadcast es async
-        asyncio.create_task(manager.broadcast(room_id, json.dumps({
+    payload = json.dumps({
+        "type": "message.created",
+        "chat_id": str(chat_id),
+        "message": {
             "id": str(m.id),
+            "text": m.text,
+            "sender_id": me.id,
             "from_me": True,
             "type": "text",
-            "text": m.text,
             "at": m.created_at.isoformat() if m.created_at else None,
-        })))
+        },
+    })
+
+    # 🔹 AJUSTE: correr broadcast tanto si hay event loop como si no (endpoint síncrono)
+    try:
+        # si estamos en un endpoint async con loop activo
+        loop = asyncio.get_running_loop()
+        loop.create_task(manager.broadcast(room_id, payload))
+    except RuntimeError:
+        # no hay loop (estamos en thread) → ejecutar corrutina en el loop principal
+        try:
+            anyio.from_thread.run(manager.broadcast, room_id, payload)
+        except TypeError:
+            # si manager.broadcast es síncrono
+            manager.broadcast(room_id, payload)
     except TypeError:
         # si manager.broadcast es síncrono
-        manager.broadcast(room_id, json.dumps({
-            "id": str(m.id),
-            "from_me": True,
-            "type": "text",
-            "text": m.text,
-            "at": m.created_at.isoformat() if m.created_at else None,
-        }))
+        manager.broadcast(room_id, payload)
 
     return MessageRead(
         id=str(m.id),
@@ -410,7 +429,6 @@ def send_text(
     )
     # ------------------- FIN NUEVO -------------------
 
-
 @router.post("/{chat_id}/attachments", response_model=List[MessageRead])
 def send_attachments(
     chat_id: str,
@@ -420,23 +438,120 @@ def send_attachments(
 ):
     """
     Sube adjuntos (imágenes) al chat.
-    (MOCK: no guarda archivo, solo devuelve URLs de ejemplo)
+    (Guarda en /media/chat/<chat_id>/ y crea mensajes type='image')
     """
-    # TODO: subir a almacenamiento, guardar mensajes tipo "image" y devolverlos
+    # --- Validaciones mínimas: pertenezco al chat ---
+    try:
+        conv_id = int(chat_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Chat no válido")
+
+    belongs = (
+        db.query(ConversationParticipant)
+        .filter(
+            ConversationParticipant.conversation_id == conv_id,
+            ConversationParticipant.user_id == me.id,
+        )
+        .first()
+    )
+    if not belongs:
+        raise HTTPException(status_code=403, detail="No perteneces a este chat")
+
+    # --- Descubre peer y room_id para broadcast WS (una sola vez) ---
+    parts = (
+        db.query(ConversationParticipant.user_id)
+        .filter(ConversationParticipant.conversation_id == conv_id)
+        .all()
+    )
+    uids = [p.user_id for p in parts]
+    peer_id = next((u for u in uids if u != me.id), me.id)
+    room_id = _room_id_for_users(me.id, peer_id, product_id=None)
+
+    # --- Carpeta destino: /media/chat/<chat_id>/ ---
+    from pathlib import Path
+    from uuid import uuid4
+
+    base_media = Path(__file__).resolve().parents[2] / "media"  # .../backend/media
+    chat_dir = base_media / "chat" / str(conv_id)
+    chat_dir.mkdir(parents=True, exist_ok=True)
+
     out: List[MessageRead] = []
+
     for f in files:
+        # nombre único conservando extensión
+        ext = ""
+        if "." in f.filename:
+            ext = "." + f.filename.rsplit(".", 1)[-1].lower()
+        unique_name = f"{uuid4().hex}{ext}"
+        disk_path = chat_dir / unique_name
+
+        # Guardar a disco por chunks
+        with open(disk_path, "wb") as fp:
+            while True:
+                chunk = f.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                fp.write(chunk)
+
+        # URL pública servida por StaticFiles("/media", ...)
+        public_url = f"/media/chat/{conv_id}/{unique_name}"
+
+        # IMPORTANTE: text="" (no None) para satisfacer NOT NULL
+        m = Message(
+            conversation_id=conv_id,
+            sender_id=me.id,
+            type="image",
+            text="",               # <- evita NOT NULL
+            image_url=public_url,  # <- guardamos la ruta pública
+        )
+        db.add(m)
+        db.flush()   # obtener m.id y m.created_at en esta transacción
+
+        # Respuesta HTTP (para quien envía)
         out.append(
             MessageRead(
-                id=f"m-{chat_id}-{f.filename}",
+                id=str(m.id),
                 from_me=True,
                 type="image",
                 text=None,
-                url=f"/static/uploads/chat/{f.filename}",  # reemplaza por URL real
+                url=public_url,
                 name=f.filename,
-                at=None,
+                at=m.created_at,
             )
         )
+
+        # --- BROADCAST WS: notificar a todos en la sala ---
+        import json
+        payload = json.dumps({
+            "type": "message.created",
+            "chat_id": conv_id,
+            "message": {
+                "id": str(m.id),
+                "sender_id": me.id,          # <- clave para que el front decida from_me
+                "type": "image",
+                "text": "",                   # así lo guardamos
+                "url": public_url,
+                "name": f.filename,
+                "at": m.created_at.isoformat() if m.created_at else None,
+            },
+        })
+
+        # Disparar sin bloquear el request
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(manager.broadcast(room_id, payload))
+        except RuntimeError:
+            # si estamos en thread sync
+            try:
+                anyio.from_thread.run(manager.broadcast, room_id, payload)
+            except TypeError:
+                manager.broadcast(room_id, payload)
+        except TypeError:
+            manager.broadcast(room_id, payload)
+
+    db.commit()
     return out
+
 
 
 @router.patch("/{chat_id}/hide")

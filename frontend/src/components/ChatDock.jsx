@@ -6,6 +6,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 =========================== */
 const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
+// NUEVO: convierte rutas relativas ("/media/...") en absolutas
+const absUrl = (u) => (u ? (u.startsWith("http") ? u : `${API_URL}${u}`) : "");
+
+
 async function baseFetch(path, options = {}) {
   const token = localStorage.getItem("token");
   const isMultipart =
@@ -52,7 +56,7 @@ const chatsApi = {
       body: JSON.stringify({ peer_id, product_id }),
     });
   },
-  // Trae mensajes (usa ?after=iso para polling incremental)
+  // Trae mensajes (usa ?after=<id> para polling incremental)
   listMessages(threadId, { after } = {}) {
     const q = after ? `?after=${encodeURIComponent(after)}` : "";
     return baseFetch(`/api/chats/${threadId}/messages${q}`, { method: "GET" });
@@ -86,7 +90,7 @@ const chatsApi = {
 /* ===========================
    Tipos de datos esperados
    Thread: {
-     id, peer: { id, name, avatar_url }, last_message_at, last_message_text,
+     id, peer: { id, name, username, avatar_url }, last_message_at, last_message_text,
      unread_count, product_id?
    }
    Message: { id, from_me:boolean, type:"text"|"image", text?, url?, name?, at: iso }
@@ -105,7 +109,12 @@ export default function ChatDock() {
 
   // Mapa de mensajes por hilo
   const [msgsByThread, setMsgsByThread] = useState({}); // { [threadId]: Message[] }
-  const lastIsoByThread = useRef({}); // control de polling incremental
+
+  // 🔹 Antes guardabas "último ISO"; ahora guardamos "último ID"
+  const lastIdByThread = useRef({}); // { [threadId]: lastMessageId }
+
+  // 🔹 Set de ids por hilo para deduplicar
+  const seenIdsRef = useRef({}); // { [threadId]: Set<string> }
 
   const nowIso = () => new Date().toISOString();
 
@@ -135,8 +144,10 @@ export default function ChatDock() {
       id: String(t.id),
       peer: {
         id: String(t.peer?.id ?? t.peer_id ?? t.user_id ?? ""),
+        // 👇 añadimos username si viene del backend; cae a name si no
+        username: t.peer?.username ?? t.peer_username ?? t.username ?? "",
         name: t.peer?.name ?? t.peer_name ?? "Usuario",
-        avatar_url: t.peer?.avatar_url ?? t.avatar_url ?? fallbackAvatar,
+        avatar_url: absUrl(t.peer?.avatar_url ?? t.avatar_url) || fallbackAvatar,
       },
       last_message_at: t.last_message_at ?? t.updated_at ?? nowIso(),
       last_message_text: t.last_message_text ?? "",
@@ -163,10 +174,17 @@ export default function ChatDock() {
         try {
           const data = await chatsApi.listMessages(id);
           if (!alive) return;
-          setMsgsByThread((m) => ({ ...m, [id]: normalizeMessages(data) }));
-          // set last seen timestamp para polling
-          const last = getLastIso(data);
-          if (last) lastIsoByThread.current[id] = last;
+          const list = normalizeMessages(data);
+
+          // 🔹 Inicializa set de ids para deduplicación
+          if (!seenIdsRef.current[id]) seenIdsRef.current[id] = new Set();
+          list.forEach((m) => seenIdsRef.current[id].add(m.id));
+
+          setMsgsByThread((m) => ({ ...m, [id]: list }));
+
+          // 🔹 Guarda último ID para polling incremental
+          const last = getLastId(data);
+          if (last != null) lastIdByThread.current[id] = String(last);
         } catch (e) {
           // silencioso en primer fetch por UX
           console.error("load messages error:", e);
@@ -184,30 +202,44 @@ export default function ChatDock() {
       from_me: !!(m.from_me ?? m.from === "me" ?? m.mine),
       type: m.type ?? (m.url ? "image" : "text"),
       text: m.text ?? "",
-      url: m.url ?? null,
+      url: absUrl(m.url ?? null),
       name: m.name ?? null,
       at: m.at ?? m.created_at ?? nowIso(),
     }));
   }
-  const getLastIso = (data) => {
+
+  // 🔹 Extrae el ÚLTIMO ID (no tiempo)
+  const getLastId = (data) => {
     const arr = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
     if (!arr.length) return null;
     const last = arr[arr.length - 1];
-    return last.at ?? last.created_at ?? null;
+    return last.id ?? null;
   };
 
   /* -------- Polling de mensajes nuevos en hilos abiertos -------- */
   useEffect(() => {
     const iv = setInterval(async () => {
       for (const id of docked) {
-        const after = lastIsoByThread.current[id];
+        const after = lastIdByThread.current[id]; // 🔹 ahora por ID
         try {
           const data = await chatsApi.listMessages(id, { after });
-          const news = normalizeMessages(data);
+          const newsAll = normalizeMessages(data);
+
+          if (!newsAll.length) continue;
+
+          // 🔹 Filtra duplicados por ID
+          if (!seenIdsRef.current[id]) seenIdsRef.current[id] = new Set();
+          const seen = seenIdsRef.current[id];
+          const news = newsAll.filter((m) => {
+            if (seen.has(m.id)) return false;
+            seen.add(m.id);
+            return true;
+          });
+
           if (news.length) {
             setMsgsByThread((m) => ({ ...m, [id]: [...(m[id] || []), ...news] }));
-            const last = getLastIso(data);
-            if (last) lastIsoByThread.current[id] = last;
+            const last = getLastId(data);
+            if (last != null) lastIdByThread.current[id] = String(last); // 🔹 avanza puntero
           }
         } catch {
           // ignoramos errores de polling
@@ -231,23 +263,37 @@ export default function ChatDock() {
       text: val,
       at: nowIso(),
     };
+
+    // 🔹 Registra id temporal para que no choque con deduplicación futura
+    if (!seenIdsRef.current[threadId]) seenIdsRef.current[threadId] = new Set();
+    seenIdsRef.current[threadId].add(temp.id);
+
     setMsgsByThread((m) => ({ ...m, [threadId]: [...(m[threadId] || []), temp] }));
 
     try {
       const saved = await chatsApi.sendText(threadId, val);
       const normalized = normalizeMessages([saved])[0] || temp;
+
+      // 🔹 actualiza set de ids con el id real
+      const setIds = seenIdsRef.current[threadId];
+      setIds.add(normalized.id);
+
       // Reemplazar temporal por saved
       setMsgsByThread((m) => ({
         ...m,
         [threadId]: (m[threadId] || []).map((msg) => (msg.id === temp.id ? normalized : msg)),
       }));
-      lastIsoByThread.current[threadId] = normalized.at;
+
+      // 🔹 avanza último ID
+      lastIdByThread.current[threadId] = String(normalized.id);
     } catch (e) {
       // revertir optimista si falla
       setMsgsByThread((m) => ({
         ...m,
         [threadId]: (m[threadId] || []).filter((msg) => msg.id !== temp.id),
       }));
+      // quita temp del set
+      seenIdsRef.current[threadId]?.delete(temp.id);
       alert(e.message || "No se pudo enviar el mensaje.");
     }
   };
@@ -264,24 +310,36 @@ export default function ChatDock() {
       name: f.name,
       at: nowIso(),
     }));
+
+    // 🔹 registra ids temporales
+    if (!seenIdsRef.current[threadId]) seenIdsRef.current[threadId] = new Set();
+    const idSet = seenIdsRef.current[threadId];
+    temps.forEach((t) => idSet.add(t.id));
+
     setMsgsByThread((m) => ({ ...m, [threadId]: [...(m[threadId] || []), ...temps] }));
 
     try {
       const saved = await chatsApi.sendFiles(threadId, files);
       const arr = normalizeMessages(saved);
+
+      // 🔹 agrega ids reales al set
+      arr.forEach((a) => idSet.add(a.id));
+
       // Reemplazo simple: quito temps y agrego server
       setMsgsByThread((m) => ({
         ...m,
         [threadId]: [...(m[threadId] || []).filter((msg) => !temps.some((t) => t.id === msg.id)), ...arr],
       }));
-      const last = arr.length ? arr[arr.length - 1].at : null;
-      if (last) lastIsoByThread.current[threadId] = last;
+
+      const last = arr.length ? arr[arr.length - 1].id : null;
+      if (last != null) lastIdByThread.current[threadId] = String(last);
     } catch (e) {
       // revertir optimista
       setMsgsByThread((m) => ({
         ...m,
         [threadId]: (m[threadId] || []).filter((msg) => !temps.some((t) => t.id === msg.id)),
       }));
+      temps.forEach((t) => idSet.delete(t.id));
       alert(e.message || "No se pudo subir la imagen.");
     }
   };
@@ -334,6 +392,8 @@ export default function ChatDock() {
         delete c[threadId];
         return c;
       });
+      delete lastIdByThread.current[threadId]; // 🔹 limpia puntero
+      delete seenIdsRef.current[threadId];     // 🔹 limpia dedupe
     } catch (e) {
       alert(e.message || "No se pudo ocultar la conversación.");
     }
@@ -376,12 +436,13 @@ export default function ChatDock() {
                     >
                       <img
                         src={t.peer?.avatar_url || fallbackAvatar}
-                        alt={t.peer?.name || "usuario"}
+                        alt={t.peer?.username || t.peer?.name || "usuario"}
                         className="h-9 w-9 rounded-full object-cover ring-1 ring-black/5"
                       />
                       <div className="min-w-0 text-left flex-1">
                         <p className="text-sm font-semibold truncate">
-                          {t.peer?.name || "Usuario"}
+                          {/* 👇 mostramos username si existe; si no, name */}
+                          {t.peer?.username || t.peer?.name || "Usuario"}
                         </p>
                         <p className="text-[11px] text-neutral-500 truncate">{t.last_message_text || "…"}</p>
                       </div>
@@ -448,10 +509,13 @@ function MiniChat({ thread, messages, text, setText, onClose, onSend, onPickFile
         <div className="flex items-center gap-2 min-w-0">
           <img
             src={thread.peer?.avatar_url || fallbackAvatar}
-            alt={thread.peer?.name || "usuario"}
+            alt={thread.peer?.username || thread.peer?.name || "usuario"}
             className="h-6 w-6 rounded-full object-cover ring-1 ring-black/5"
           />
-          <p className="text-sm font-semibold truncate">{thread.peer?.name || "Usuario"}</p>
+          <p className="text-sm font-semibold truncate">
+            {/* 👇 username si existe; si no, nombre */}
+            {thread.peer?.username || thread.peer?.name || "Usuario"}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <button

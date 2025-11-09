@@ -14,7 +14,8 @@ import app.models.user        # noqa: F401
 import app.models.product     # noqa: F401
 import app.models.like        # noqa: F401
 import app.models.chat        # noqa: F401
-import app.models.user_event  # <-- NUEVO: eventos del usuario para IA (view/like/dismiss/match)
+#import app.models.user_event  # <-- NUEVO: eventos del usuario para IA (view/like/dismiss/match)
+#from .routers import ws_chat
 
 # Routers
 from app.routers import auth, users, products, likes, chats, ai_admin
@@ -50,6 +51,7 @@ MEDIA_DIR = BASE_DIR / "media"
 (STATIC_DIR / "uploads" / "avatars").mkdir(parents=True, exist_ok=True)
 (STATIC_DIR / "uploads" / "chat").mkdir(parents=True, exist_ok=True)     # adjuntos de chat
 (MEDIA_DIR / "products").mkdir(parents=True, exist_ok=True)
+(MEDIA_DIR / "chat").mkdir(parents=True, exist_ok=True)  # 👈 AGREGADO: carpeta para /media/chat/<conversation_id>
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
@@ -66,8 +68,10 @@ app.include_router(products.router)
 app.include_router(likes.router, prefix="/api/likes", tags=["likes"])
 app.include_router(likes.router, prefix="/likes", tags=["likes-compat"])
 
-# Chats bajo /api/chats (una sola inclusión explícita)
+#app.include_router(ws_chat.router)
+# Chats bajo /api/chats  (el router ya tiene prefix, pero repetirlo aquí es válido y explícito)
 app.include_router(chats.router, prefix="/api/chats", tags=["chats"])
+
 
 # (expone /api/ai/rebuild_embeddings)
 app.include_router(ai_admin.router, prefix="/api/ai", tags=["ai"])
@@ -107,6 +111,7 @@ async def cleanup_likes_loop(interval_seconds: int = 3600):
     """
     Borra likes expirados o asociados a productos inactivos cada X tiempo.
     """
+    # pequeña espera tras arrancar para que la app esté estable
     await asyncio.sleep(5)
     try:
         while True:
@@ -148,8 +153,10 @@ async def cleanup_likes_loop(interval_seconds: int = 3600):
 
             await asyncio.sleep(interval_seconds)
     except asyncio.CancelledError:
+        # Salida limpia cuando Uvicorn hace reload o se apaga la app
         print("[CLEANUP] Tarea cancelada de forma segura.")
     except Exception as e:
+         # No tumbar la app si falla puntualmente
         print("[CLEANUP ERROR]", e)
 
 @app.on_event("startup")
