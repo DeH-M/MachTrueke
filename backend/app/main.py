@@ -15,7 +15,8 @@ import app.models.user        # noqa: F401
 import app.models.product     # noqa: F401
 import app.models.like        # noqa: F401
 import app.models.chat        # noqa: F401
-from app.routers import chats
+#from app.routers import chats
+#from .routers import ws_chat
 
 # Routers
 from app.routers import auth, users, products, likes, chats
@@ -48,6 +49,7 @@ MEDIA_DIR = BASE_DIR / "media"
 (STATIC_DIR / "uploads" / "avatars").mkdir(parents=True, exist_ok=True)
 (STATIC_DIR / "uploads" / "chat").mkdir(parents=True, exist_ok=True)     # <- usado por adjuntos de chat
 (MEDIA_DIR / "products").mkdir(parents=True, exist_ok=True)
+(MEDIA_DIR / "chat").mkdir(parents=True, exist_ok=True)  # 👈 AGREGADO: carpeta para /media/chat/<conversation_id>
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
@@ -59,6 +61,7 @@ app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(products.router)
+#app.include_router(ws_chat.router)
 
 
 # correcto:
@@ -70,7 +73,7 @@ app.include_router(likes.router, prefix="/api/likes", tags=["likes"])
 app.include_router(likes.router, prefix="/likes", tags=["likes-compat"])
 
 # Chats bajo /api/chats  (el router ya tiene prefix, pero repetirlo aquí es válido y explícito)
-app.include_router(chats.router, prefix="/api/chats", tags=["chats"])
+#app.include_router(chats.router, prefix="/api/chats", tags=["chats"])
 
 # ─────────────────────────────────────────────────────────────
 # Health, ping & root
