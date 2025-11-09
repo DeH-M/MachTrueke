@@ -1,27 +1,43 @@
-// src/pages/Home.jsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSwipeable } from "react-swipeable";
-import { useLikes } from "../store/likesStore";
+
+import useAuth from "../store/authStore";
 import { likesApi } from "../services/likesApi";
 import { productsApi } from "../services/productsApi";
-import useAuth from "../store/authStore"; // ✅ para conocer mi user.id
+import { recsApi } from "../services/recsApi";
+import { eventsApi } from "../services/eventsApi";
 
-// Fallback estable para desarrollo
+// =====================================
+// CONFIG
+// =====================================
 const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
-// helper para URLs relativas del backend
+// --- utilidades de imagen / URL
 const absUrl = (p) => {
   if (!p) return "";
   if (/^https?:\/\//i.test(p) || p.startsWith("blob:")) return p;
   return `${API_URL}${p.startsWith("/") ? "" : "/"}${p}`;
 };
 
-/* -------- helper: normaliza ProductRead del backend a la UI de esta tarjeta -------- */
+// --- util para guardar IDs ocultos localmente
+const HIDDEN_KEY = "mt_hidden_ids_v1";
+function loadHidden() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(HIDDEN_KEY) || "[]"));
+  } catch {
+    return new Set();
+  }
+}
+function saveHidden(set) {
+  localStorage.setItem(HIDDEN_KEY, JSON.stringify([...set]));
+}
+
+// =====================================
+// helpers
+// =====================================
 function toCard(p) {
   const imageUrls = Array.isArray(p.images)
-    ? p.images
-        .map((img) => (typeof img === "string" ? img : img?.url))
-        .filter(Boolean)
+    ? p.images.map((img) => (typeof img === "string" ? img : img?.url)).filter(Boolean)
     : [];
 
   return {
@@ -30,59 +46,76 @@ function toCard(p) {
     description: p.description ?? "",
     images: imageUrls,
     owner: p.owner ?? null,
-    owner_id: p.owner_id ?? null, // ✅ lo guardamos para poder filtrar “mis” productos
+    owner_id: p.owner_id ?? null,
+    sim_score: typeof p.sim_score === "number" ? p.sim_score : undefined,
   };
 }
 
+// =====================================
+// COMPONENTE PRINCIPAL
+// =====================================
 export default function Home() {
-  const { user } = useAuth(); // ✅ necesito user?.id para ocultar mis productos
-  const [queue, setQueue] = useState([]); // cola de productos para swipe
+  const { user } = useAuth();
+
+  const [queue, setQueue] = useState([]);
   const [idx, setIdx] = useState(0);
   const card = queue[idx];
 
   const [dragX, setDragX] = useState(0);
   const [isAnimating, setIsAnimating] = useState(false);
-
   const [loading, setLoading] = useState(true);
   const [errMsg, setErrMsg] = useState("");
-
-  const [likedIds, setLikedIds] = useState([]); // ✅ ids ya likeados
-  const { addLocalMatch } = useLikes();
+  const [likedIds, setLikedIds] = useState([]);
+  const [hiddenIds, setHiddenIds] = useState(loadHidden());
   const THRESHOLD = 100;
 
-  /* -------------------- Carga inicial desde backend -------------------- */
+  const viewedRef = useRef(new Set());
+  const observerRef = useRef(null);
+
+  // =====================================
+  // CARGA INICIAL
+  // =====================================
   useEffect(() => {
     let alive = true;
+
     (async () => {
       try {
         setLoading(true);
         setErrMsg("");
 
-        // Traemos en paralelo productos e ids likeados
-        const [{ items }, idsResp] = await Promise.all([
-          productsApi.listPublic({ page: 1, limit: 50 }),
-          likesApi.myLikedIds().catch(() => ({ product_ids: [] })), // si falla, continúa
-        ]);
+        // 1) IA personalizada (excluye like/dismiss/match automáticamente)
+        const recs = await recsApi.home({ exclude: "ldm" }).catch(() => ({ items: [] }));
+        let items = (recs?.items || []).map(toCard);
 
-        const cards = (items || []).map(toCard);
-        const ids = idsResp?.product_ids || [];
+        // 2) fallback si IA vacía
+        if (!items.length) {
+          const { items: raw } = await productsApi
+            .listPublic({ page: 1, limit: 50 })
+            .catch(() => ({ items: [] }));
+          items = (raw || []).map(toCard);
+        }
+
+        // 3) traer ids likeados del backend
+        const idsResp = await likesApi.myLikedIds().catch(() => ({ product_ids: [] }));
+        const liked = idsResp?.product_ids || [];
 
         if (!alive) return;
 
-        // ✅ Filtro 1: quita mis productos (usa owner_id o, si no viene, owner.id)
+        // 4) filtros combinados
         const notMine = user?.id
-          ? cards.filter(
+          ? items.filter(
               (c) => String(c.owner_id ?? c.owner?.id ?? "") !== String(user.id)
             )
-          : cards;
+          : items;
 
-        // ✅ Filtro 2: quita los ya likeados
-        const notLiked = ids.length
-          ? notMine.filter((c) => !ids.includes(Number(c.id)))
+        const notLiked = liked.length
+          ? notMine.filter((c) => !liked.includes(Number(c.id)))
           : notMine;
 
-        setLikedIds(ids);
-        setQueue(notLiked);
+        const notHidden = notLiked.filter((c) => !hiddenIds.has(Number(c.id)));
+
+        setLikedIds(liked);
+        setQueue(notHidden);
         setIdx(0);
       } catch (e) {
         console.error(e);
@@ -95,19 +128,66 @@ export default function Home() {
     return () => {
       alive = false;
     };
-  }, [user?.id]);
+  }, [user?.id, hiddenIds]);
 
-  /* -------------------- navegación/animación -------------------- */
+  // =====================================
+  // OBSERVER para registrar 'view'
+  // =====================================
+  useEffect(() => {
+    if (!queue.length) return;
+
+    if (observerRef.current) {
+      observerRef.current.disconnect();
+      observerRef.current = null;
+    }
+
+    const io = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((e) => {
+          if (!e.isIntersecting) return;
+          const pid = Number(e.target.getAttribute("data-id"));
+          if (!pid || viewedRef.current.has(pid)) return;
+          viewedRef.current.add(pid);
+          eventsApi.send(pid, "view").catch(() => {});
+        });
+      },
+      { root: null, rootMargin: "0px", threshold: 0.5 }
+    );
+
+    observerRef.current = io;
+    const nodes = document.querySelectorAll("[data-card=product]");
+    nodes.forEach((n) => io.observe(n));
+
+    return () => {
+      io.disconnect();
+      observerRef.current = null;
+    };
+  }, [queue, idx]);
+
+  // =====================================
+  // Swipe / navegación
+  // =====================================
   const resetDrag = () => setDragX(0);
-
   const goNext = () => {
     setIsAnimating(false);
     setDragX(0);
     setIdx((i) => Math.min(i + 1, queue.length));
   };
 
-  const onReject = () => {
+  const addHidden = (idNum) => {
+    const nextHidden = new Set(hiddenIds);
+    nextHidden.add(idNum);
+    setHiddenIds(nextHidden);
+    saveHidden(nextHidden);
+  };
+
+  const onReject = async () => {
     if (!card) return;
+    const idNum = Number(card.id);
+
+    eventsApi.send(idNum, "dismiss").catch(() => {});
+    addHidden(idNum);
+
     setIsAnimating(true);
     setDragX(-window.innerWidth);
     setTimeout(goNext, 200);
@@ -116,27 +196,18 @@ export default function Home() {
   const onMatch = async () => {
     if (!card) return;
 
-    // 🔒 Seguridad extra en UI: si por cualquier razón el mío pasó el filtro, NO hago match
     if (user?.id && String(card.owner_id ?? card.owner?.id ?? "") === String(user.id)) {
       onReject();
       return;
     }
 
+    const idNum = Number(card.id);
     try {
-      // ✅ aseguro number para el backend
-      const created = await likesApi.create(Number(card.id));
+      eventsApi.send(idNum, "like").catch(() => {});
+      await likesApi.create(idNum).catch(() => null);
 
-      // ✅ actualizo ids likeados locales para que ya no reaparezca
-      setLikedIds((prev) => (prev.includes(Number(card.id)) ? prev : [...prev, Number(card.id)]));
-
-      // ✅ refresco store local (para la vista de Likes)
-      addLocalMatch({
-        id: created.id || crypto.randomUUID(),
-        product: { id: card.id, title: card.title, cover: card.images?.[0] },
-        owner: card.owner || null,
-        note: created.note || "Match",
-        created_at: created.created_at || new Date().toISOString(),
-      });
+      addHidden(idNum);
+      setLikedIds((prev) => (prev.includes(idNum) ? prev : [...prev, idNum]));
 
       setIsAnimating(true);
       setDragX(window.innerWidth);
@@ -149,7 +220,9 @@ export default function Home() {
     }
   };
 
-  /* -------------------- Swipe handlers -------------------- */
+  // =====================================
+  // SWIPEABLE + teclas
+  // =====================================
   const handlers = useSwipeable({
     onSwiping: (e) => {
       if (isAnimating) return;
@@ -166,7 +239,6 @@ export default function Home() {
     preventScrollOnSwipe: true,
   });
 
-  /* -------------------- Atajos de teclado -------------------- */
   useEffect(() => {
     const onKey = (ev) => {
       if (!card) return;
@@ -177,7 +249,9 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKey);
   }, [card]);
 
-  /* -------------------- Estilos derivados del arrastre -------------------- */
+  // =====================================
+  // render
+  // =====================================
   const rotate = dragX / 20;
   const opacityYes = Math.min(Math.max(dragX / 120, 0), 1);
   const opacityNo = Math.min(Math.max(-dragX / 120, 0), 1);
@@ -194,14 +268,17 @@ export default function Home() {
           <p className="text-sm text-neutral-600">No hay más productos por ahora.</p>
         ) : (
           <div className="w-full max-w-md">
-            {/* Tarjeta con swipe */}
             <div
               {...handlers}
               className="relative select-none will-change-transform"
-              style={{ transform: translate, transition: isAnimating ? "transform 200ms ease" : "none" }}
+              data-card="product"
+              data-id={card.id}
+              style={{
+                transform: translate,
+                transition: isAnimating ? "transform 200ms ease" : "none",
+              }}
             >
               <div className="bg-white rounded-2xl shadow overflow-hidden">
-                {/* Imagen */}
                 <div className="relative aspect-square bg-neutral-100">
                   <img
                     src={absUrl(card.images?.[0])}
@@ -209,8 +286,6 @@ export default function Home() {
                     className="w-full h-full object-cover"
                     draggable={false}
                   />
-
-                  {/* Badges YES/NO */}
                   <span
                     className="absolute top-4 left-4 text-sm font-bold px-3 py-1 rounded-xl ring-1 ring-green-500/40 bg-white/90 text-green-600"
                     style={{ opacity: opacityYes }}
@@ -225,12 +300,14 @@ export default function Home() {
                   </span>
                 </div>
 
-                {/* Info */}
                 <div className="p-4 space-y-2">
                   <h2 className="text-lg font-bold">{card.title}</h2>
                   <p className="text-sm text-neutral-600">{card.description}</p>
-
-                  {/* Sección owner (opcional) */}
+                  {typeof card.sim_score === "number" && (
+                    <div className="text-[11px] text-neutral-500">
+                      score: {card.sim_score.toFixed(3)}
+                    </div>
+                  )}
                   {card.owner && (
                     <div className="flex items-center gap-2 mt-2">
                       <img
@@ -245,7 +322,6 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Botones (fallback desktop) */}
             <div className="mt-4 flex gap-2">
               <button
                 onClick={onReject}
@@ -264,6 +340,18 @@ export default function Home() {
             <p className="text-[11px] text-neutral-500 mt-2 text-center">
               Desliza a la derecha para hacer match, a la izquierda para rechazar (teclas → / ← también).
             </p>
+
+            {/* Botón de depuración opcional */}
+            <button
+              onClick={() => {
+                const s = new Set();
+                setHiddenIds(s);
+                saveHidden(s);
+              }}
+              className="mt-3 text-[11px] underline text-neutral-400"
+            >
+              Limpiar ocultos (debug)
+            </button>
           </div>
         )}
       </div>
