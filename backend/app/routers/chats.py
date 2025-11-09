@@ -8,12 +8,11 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 import asyncio  # para disparar broadcast async en background
 import anyio    # 🔹 AGREGADO: para ejecutar corrutinas desde thread
+import json  # ← NUEVO, para serializar el evento
 
 # Deps y usuario actual
 from ..deps import get_current_user, get_db
 from ..models.user import User
-
-
 
 # (Cuando tengas los modelos reales, descomenta y usa)
 # from ..models.chat import Chat, ChatParticipant
@@ -391,11 +390,16 @@ def send_text(
     # Enviar un JSON simple (el front decide cómo renderizar)
     import json
     payload = json.dumps({
-        "id": str(m.id),
-        "from_me": True,
-        "type": "text",
-        "text": m.text,
-        "at": m.created_at.isoformat() if m.created_at else None,
+        "type": "message.created",
+        "chat_id": str(chat_id),
+        "message": {
+            "id": str(m.id),
+            "text": m.text,
+            "sender_id": me.id,
+            "from_me": True,
+            "type": "text",
+            "at": m.created_at.isoformat() if m.created_at else None,
+        },
     })
 
     # 🔹 AJUSTE: correr broadcast tanto si hay event loop como si no (endpoint síncrono)
@@ -453,12 +457,20 @@ def send_attachments(
     if not belongs:
         raise HTTPException(status_code=403, detail="No perteneces a este chat")
 
+    # --- Descubre peer y room_id para broadcast WS (una sola vez) ---
+    parts = (
+        db.query(ConversationParticipant.user_id)
+        .filter(ConversationParticipant.conversation_id == conv_id)
+        .all()
+    )
+    uids = [p.user_id for p in parts]
+    peer_id = next((u for u in uids if u != me.id), me.id)
+    room_id = _room_id_for_users(me.id, peer_id, product_id=None)
+
     # --- Carpeta destino: /media/chat/<chat_id>/ ---
     from pathlib import Path
     from uuid import uuid4
 
-    # BASE: backend/app/main.py ya monta /media -> BASE_DIR/media
-    # construimos la carpeta "media/chat/<chat_id>"
     base_media = Path(__file__).resolve().parents[2] / "media"  # .../backend/media
     chat_dir = base_media / "chat" / str(conv_id)
     chat_dir.mkdir(parents=True, exist_ok=True)
@@ -495,6 +507,7 @@ def send_attachments(
         db.add(m)
         db.flush()   # obtener m.id y m.created_at en esta transacción
 
+        # Respuesta HTTP (para quien envía)
         out.append(
             MessageRead(
                 id=str(m.id),
@@ -507,118 +520,38 @@ def send_attachments(
             )
         )
 
+        # --- BROADCAST WS: notificar a todos en la sala ---
+        import json
+        payload = json.dumps({
+            "type": "message.created",
+            "chat_id": conv_id,
+            "message": {
+                "id": str(m.id),
+                "sender_id": me.id,          # <- clave para que el front decida from_me
+                "type": "image",
+                "text": "",                   # así lo guardamos
+                "url": public_url,
+                "name": f.filename,
+                "at": m.created_at.isoformat() if m.created_at else None,
+            },
+        })
+
+        # Disparar sin bloquear el request
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(manager.broadcast(room_id, payload))
+        except RuntimeError:
+            # si estamos en thread sync
+            try:
+                anyio.from_thread.run(manager.broadcast, room_id, payload)
+            except TypeError:
+                manager.broadcast(room_id, payload)
+        except TypeError:
+            manager.broadcast(room_id, payload)
+
     db.commit()
     return out
 
-
-#@router.post("/{chat_id}/attachments", response_model=List[MessageRead])
-#def send_attachments(
-#    chat_id: str,
-#    files: List[UploadFile] = File(...),
-#    db: Session = Depends(get_db),
-#    me: User = Depends(get_current_user),
-#):
-#    """
-#    Sube adjuntos (imágenes) al chat.
-#    Guarda los archivos bajo /media/chat/<conversation_id>/ y crea mensajes tipo 'image'.
-#    """
-    # --- seguridad básica y parseo de chat_id ---
-#    try:
-#        conv_id = int(chat_id)
-#    except ValueError:
-#        raise HTTPException(status_code=404, detail="Chat no válido")
-
-#    belongs = (
-#        db.query(ConversationParticipant)
-#        .filter(
-#            ConversationParticipant.conversation_id == conv_id,
-#            ConversationParticipant.user_id == me.id,
-#        )
-#        .first()
-#    )
-#    if not belongs:
-#        raise HTTPException(status_code=403, detail="No perteneces a este chat")
-
-    # --- persistencia en disco ---
-#   import os, uuid
-#    from pathlib import Path
-
-#    MEDIA_BASE = Path(os.getcwd()) / "media"           # <root>/media
-#    CHAT_DIR = MEDIA_BASE / "chat" / str(conv_id)      # <root>/media/chat/<id>
-#    CHAT_DIR.mkdir(parents=True, exist_ok=True)
-
-#    saved_msgs: List[MessageRead] = []
-
-#    for f in files:
-        # nombre seguro + evitar colisiones
-#        ext = os.path.splitext(f.filename or "")[1].lower()
-#        fname = f"{uuid.uuid4().hex}{ext if ext else ''}"
-#        dest = CHAT_DIR / fname
-
-        # escribir a disco
-#        with dest.open("wb") as out:
-#            while True:
-#                chunk = f.file.read(1024 * 1024)
-#                if not chunk:
-#                    break
-#                out.write(chunk)
-
-        # URL relativa que servirá StaticFiles: /media/chat/<id>/<fname>
-#        rel_url = f"/media/chat/{conv_id}/{fname}"
-
-#        # crear mensaje en DB
-#        m = Message(
-#            conversation_id=conv_id,
-#            sender_id=me.id,
-#            type="image",
-#            text=None,
-#            image_url=rel_url,
-#        )
-#        db.add(m)
-#        db.flush()   # para obtener m.id
-
-#        saved_msgs.append(
-#            MessageRead(
-#                id=str(m.id),
-#                from_me=True,
-#                type="image",
-#               text=None,
-#                url=rel_url,
-#                name=f.filename,
-#                at=m.created_at,
-#            )
-#       )
-
-#    db.commit()
-#    return saved_msgs
-
-#@router.post("/{chat_id}/attachments", response_model=List[MessageRead])
-#def send_attachments(
-#    chat_id: str,
-#    files: List[UploadFile] = File(...),
-#   db: Session = Depends(get_db),
-#    me: User = Depends(get_current_user),
-#):
-#    """
-#    Sube adjuntos (imágenes) al chat.
-#    (MOCK: no guarda archivo, solo devuelve URLs de ejemplo)
-
-#    """
-#   TODO: subir a almacenamiento, guardar mensajes tipo "image" y devolverlos
-#    out: List[MessageRead] = []
-#    for f in files:
-#        out.append(
-#            MessageRead(
-#                id=f"m-{chat_id}-{f.filename}",
-#                from_me=True,
-#                type="image",
-#                text=None,
-#                url=f"/static/uploads/chat/{f.filename}",  # reemplaza por URL real
-#                name=f.filename,
-#                at=None,
-#            )
-#        )
-#    return out
 
 
 @router.patch("/{chat_id}/hide")
