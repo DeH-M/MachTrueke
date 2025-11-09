@@ -68,9 +68,8 @@ app.include_router(products.router)
 app.include_router(likes.router, prefix="/api/likes", tags=["likes"])
 app.include_router(likes.router, prefix="/likes", tags=["likes-compat"])
 
-#app.include_router(ws_chat.router)
-# Chats bajo /api/chats  (el router ya tiene prefix, pero repetirlo aquí es válido y explícito)
-app.include_router(chats.router, prefix="/api/chats", tags=["chats"])
+# Chats (SIN prefix aquí si el router ya lo trae)
+app.include_router(chats.router)
 
 
 # (expone /api/ai/rebuild_embeddings)
