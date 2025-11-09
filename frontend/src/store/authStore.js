@@ -28,7 +28,7 @@ const useAuth = create((set, get) => ({
     set({ user, isAuth: true });
   },
 
-  // ✅ CLAVE: guardar token y de inmediato hidratar con /auth/me
+  // CLAVE: guardar token y de inmediato hidratar con /auth/me
   async loginWithToken(token) {
     localStorage.setItem("token", token);
     set({ loading: true });

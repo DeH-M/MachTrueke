@@ -30,7 +30,7 @@ export default function Login() {
         throw new Error("Login sin token. Revisa el backend.");
       }
 
-      // 🔑 Preferencia: hidratar con el método del store (si existe)
+      // Preferencia: hidratar con el método del store (si existe)
       if (typeof loginWithToken === "function") {
         await loginWithToken(access_token);
       } else {
@@ -45,8 +45,8 @@ export default function Login() {
         }
       }
 
-      // Redirige donde prefieras (perfil suele ser lo esperado al iniciar)
-      navigate("/profile", { replace: true });
+      // Redirige donde prefieras (home suele ser lo esperado al iniciar)
+      navigate("/", { replace: true });
     } catch (err) {
       setErrorMsg(err?.message || "Error al iniciar sesión");
     } finally {
