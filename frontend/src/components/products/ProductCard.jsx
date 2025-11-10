@@ -1,6 +1,18 @@
 // src/components/products/ProductCard.jsx
+// ✅ 1️⃣ Agregamos API_URL y absUrl justo al inicio
+const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+const absUrl = (u) => (u?.startsWith("http") ? u : `${API_URL}${u || ""}`);
+
 export default function ProductCard({ p, onToggleVisible, onEdit }) {
-  const mainImage = (pp) => (Array.isArray(pp?.images) ? pp.images[0] : undefined);
+  // ✅ 2️⃣ Modificamos mainImage para usar absUrl
+  const mainImage = (pp) => {
+    if (Array.isArray(pp?.images) && pp.images.length) {
+      const img = pp.images[0];
+      const url = typeof img === "string" ? img : img?.url;
+      return absUrl(url);
+    }
+    return undefined; // React no pone el atributo src si es undefined
+  };
 
   return (
     <div
@@ -9,6 +21,7 @@ export default function ProductCard({ p, onToggleVisible, onEdit }) {
       title="Editar producto"
     >
       <div className="relative aspect-square overflow-hidden bg-neutral-100">
+        {/* ✅ 3️⃣ Usa la función corregida */}
         <img
           src={mainImage(p)}
           alt={p.title}

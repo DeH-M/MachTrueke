@@ -14,7 +14,7 @@ const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
 // --- utilidades de imagen / URL
 const absUrl = (p) => {
-  if (!p) return "";
+  if (!p) return null;
   if (/^https?:\/\//i.test(p) || p.startsWith("blob:")) return p;
   return `${API_URL}${p.startsWith("/") ? "" : "/"}${p}`;
 };
@@ -36,6 +36,29 @@ function saveHidden(set) {
 // helpers
 // =====================================
 function toCard(p) {
+  // Acepta p.images, p.product_images o p.image_url (cualquiera que venga)
+  const raw =
+    (Array.isArray(p.images) && p.images) ||
+    (Array.isArray(p.product_images) && p.product_images) ||
+    (p.image_url ? [p.image_url] : []);
+
+  const imageUrls = (raw || [])
+    .map((img) => (typeof img === "string" ? img : img?.url))
+    .filter(Boolean);
+
+  return {
+    id: String(p.id),
+    title: p.title ?? "",
+    description: p.description ?? "",
+    images: imageUrls,         // << aquí ya garantizamos strings tipo "/media/..."
+    owner: p.owner ?? null,
+    owner_id: p.owner_id ?? null,
+    sim_score: typeof p.sim_score === "number" ? p.sim_score : undefined,
+  };
+}
+
+/*
+function toCard(p) {
   const imageUrls = Array.isArray(p.images)
     ? p.images.map((img) => (typeof img === "string" ? img : img?.url)).filter(Boolean)
     : [];
@@ -49,7 +72,7 @@ function toCard(p) {
     owner_id: p.owner_id ?? null,
     sim_score: typeof p.sim_score === "number" ? p.sim_score : undefined,
   };
-}
+}*/
 
 // =====================================
 // COMPONENTE PRINCIPAL
@@ -257,6 +280,34 @@ export default function Home() {
   const opacityNo = Math.min(Math.max(-dragX / 120, 0), 1);
   const translate = `translateX(${dragX}px) rotate(${rotate}deg)`;
 
+  // URL segura de la primera imagen (si no hay, queda null)
+const rawFirst = card?.images?.[0];
+const firstImgSrc = absUrl(typeof rawFirst === "string" ? rawFirst : rawFirst?.url);
+
+// Si la URL que vino desde /api/recs/home falla, refrescamos desde /api/products/:id
+async function fixImageFromProduct(pid) {
+  try {
+    const detail = await productsApi.getOne(pid); // o productsApi.getById(pid) según tu servicio
+    const imgs = Array.isArray(detail?.images)
+      ? detail.images
+          .map((img) => (typeof img === "string" ? img : img?.url))
+          .filter(Boolean)
+      : [];
+
+    if (imgs.length) {
+      setQueue((q) => {
+        const copy = [...q];
+        const i = copy.findIndex((c) => String(c.id) === String(pid));
+        if (i >= 0) copy[i] = { ...copy[i], images: imgs };
+        return copy;
+      });
+    }
+  } catch {
+    // opcional: pon un placeholder si también falla
+  }
+}
+
+
   return (
     <div className="min-h-[calc(100vh-56px)] bg-[#f5f2e9] px-4 py-6">
       <div className="mx-auto w-full max-w-6xl flex flex-col items-center">
@@ -281,10 +332,17 @@ export default function Home() {
               <div className="bg-white rounded-2xl shadow overflow-hidden">
                 <div className="relative aspect-square bg-neutral-100">
                   <img
-                    src={absUrl(card.images?.[0])}
+                    src={absUrl(typeof card.images?.[0] === "string" ? card.images?.[0] : card.images?.[0]?.url) || undefined}
                     alt={card.title}
                     className="w-full h-full object-cover"
                     draggable={false}
+                    loading="lazy"
+                    onError={(e) => {
+                      // Evita loops y pide la imagen buena desde /api/products/:id
+                      e.currentTarget.removeAttribute("src");
+                      e.currentTarget.style.display = "none"; // oculta el ícono roto
+                      fixImageFromProduct(card.id);
+                    }}
                   />
                   <span
                     className="absolute top-4 left-4 text-sm font-bold px-3 py-1 rounded-xl ring-1 ring-green-500/40 bg-white/90 text-green-600"
