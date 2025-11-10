@@ -14,6 +14,14 @@ export default function ProfileProducts() {
   const [openEdit, setOpenEdit] = useState(false);
   const [current, setCurrent] = useState(null);
 
+  // Banner (centrado arriba)
+  const [banner, setBanner] = useState({ open: false, text: "", tone: "success" });
+  const showBanner = (text, tone = "success") => {
+    setBanner({ open: true, text, tone });
+    window.clearTimeout(showBanner._t);
+    showBanner._t = window.setTimeout(() => setBanner((b) => ({ ...b, open: false })), 2200);
+  };
+
   // Carga inicial
   useEffect(() => {
     (async () => {
@@ -44,6 +52,7 @@ export default function ProfileProducts() {
     try {
       const prod = next.find((p) => p.id === id);
       await productsApi.toggleVisibility(id, !!prod.visible);
+      showBanner("Visibilidad actualizada");
     } catch (e) {
       console.error(e);
       setProducts(prev);
@@ -51,21 +60,45 @@ export default function ProfileProducts() {
     }
   };
 
-  const onCreated = (created) => setProducts((ps) => [created, ...ps]);
+  const onCreated = (created) => {
+    setProducts((ps) => [created, ...ps]);
+    showBanner("Producto publicado");
+  };
 
+  // Soporta que el modal envíe el objeto actualizado o un mapper
   const onUpdated = (updatedOrMapper) => {
     if (typeof updatedOrMapper === "function") {
-      // soporte cuando el hijo manda un mapper
       setProducts((ps) => ps.map((p) => (p.id === current?.id ? updatedOrMapper(p) : p)));
     } else {
       setProducts((ps) => ps.map((p) => (p.id === updatedOrMapper.id ? updatedOrMapper : p)));
     }
+    showBanner("Producto actualizado");
   };
 
-  const onDeleted = (id) => setProducts((ps) => ps.filter((p) => p.id !== id));
+  const onDeleted = (id) => {
+    setProducts((ps) => ps.filter((p) => p.id !== id));
+    setOpenEdit(false);
+    setCurrent(null);
+    showBanner("Producto eliminado");
+  };
 
   return (
     <>
+      {/* Banner centrado superior */}
+      {banner.open && (
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[100]">
+          <div
+            className={`px-4 py-2 rounded-xl shadow-md ring-1 ${
+              banner.tone === "success"
+                ? "bg-green-100 text-green-800 ring-green-200"
+                : "bg-neutral-100 text-neutral-800 ring-neutral-200"
+            }`}
+          >
+            <span className="text-sm font-semibold">{banner.text}</span>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-bold">Tus productos</h2>
@@ -93,7 +126,7 @@ export default function ProfileProducts() {
               key={p.id}
               p={p}
               onToggleVisible={onToggleVisible}
-              onEdit={openEditor}
+              onEdit={openEditor}  // ✅ abrir modal al hacer clic
             />
           ))}
         </div>
@@ -103,15 +136,15 @@ export default function ProfileProducts() {
       <CreateProductModal
         open={openCreate}
         onClose={() => setOpenCreate(false)}
-        onCreated={onCreated}
+        onCreated={onCreated} // ✅ muestra banner al crear
       />
 
       <EditProductModal
         open={openEdit}
         product={current}
         onClose={() => setOpenEdit(false)}
-        onUpdated={onUpdated}
-        onDeleted={onDeleted}
+        onUpdated={onUpdated} // muestra banner al actualizar
+        onDeleted={onDeleted} // muestra banner al eliminar
       />
     </>
   );
