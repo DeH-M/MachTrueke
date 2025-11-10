@@ -1,5 +1,6 @@
 // src/pages/Likes.jsx
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";             // ← agregado
 import { likesApi } from "../services/likesApi";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
@@ -192,7 +193,8 @@ export default function Likes() {
                           </p>
 
                           <div className="mt-2 flex items-center justify-between">
-                            <div className="flex items-center gap-2 min-w-0">
+                            {/* ← Enlace al perfil público */}
+                            <Link to={`/u/${p.owner.id}`} className="flex items-center gap-2 min-w-0">
                               <img
                                 src={p.owner.avatar}
                                 alt={p.owner.name}
@@ -201,7 +203,7 @@ export default function Likes() {
                               <span className="text-xs text-neutral-700 truncate">
                                 {p.owner.name}
                               </span>
-                            </div>
+                            </Link>
 
                             <button
                               onClick={() => openDockChat(p.owner.id)}
