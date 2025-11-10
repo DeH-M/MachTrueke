@@ -2,6 +2,9 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";             // ← agregado
 import { likesApi } from "../services/likesApi";
+import { chatsApi } from "../services/chatsApi";     // ← agregado
+import { useChatDock } from "../components/chatDockStore";
+
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const absUrl = (p) =>
@@ -57,9 +60,37 @@ export default function Likes() {
   const [loading, setLoading] = useState(true);
   const [products, setProducts] = useState([]);
 
-  const openDockChat = (userId) => {
+  // 🔹 AGREGADO: función del store para abrir el dock desde un producto
+  const openDock = useChatDock((s) => s.openFromProduct);
+
+  // Abre el dock PERO primero crea/abre el chat en backend con product_id
+  const openDockChat = async (userId, productId) => {                 // ← cambiado a async
     if (!userId) return;
-    window.dispatchEvent(new CustomEvent("open-chat", { detail: { id: userId } }));
+
+    try {
+      // 1) abrir/crear chat en backend + insertar mensaje "proviene del producto"
+      const chat = await chatsApi.openFromProduct(userId, productId);  // ← clave
+
+      // 2) abrir dock con el chat devuelto
+      window.dispatchEvent(
+        new CustomEvent("open-chat", {
+          detail: {
+            id: String(chat.id),                    // muchos docks esperan el id del chat
+            peer: chat.peer || { id: String(userId) },
+            // opcional: conserva product_id por si tu dock muestra mini-card
+            ...(productId ? { product_id: productId } : {}),
+          },
+        })
+      );
+    } catch (err) {
+      console.error("No se pudo abrir el chat desde producto:", err);
+      // fallback: abre dock sin crear mensaje (si quieres)
+      window.dispatchEvent(
+        new CustomEvent("open-chat", {
+          detail: { peer: { id: String(userId) }, ...(productId ? { product_id: productId } : {}) },
+        })
+      );
+    }
   };
 
   useEffect(() => {
@@ -206,7 +237,11 @@ export default function Likes() {
                             </Link>
 
                             <button
-                              onClick={() => openDockChat(p.owner.id)}
+                              onClick={() => { 
+                                // 🔹 AGREGADO: primero store (abre dock centralizado) 
+                                // 🔹 Mantengo tu flujo actual SIN quitar nada
+                                openDockChat(p.owner.id, p.id);  
+                              }}  // ← pasa también productId
                               className="text-xs rounded-lg bg-blue-600 text-white px-3 py-1 font-semibold hover:bg-blue-700"
                               title={`Chatear con ${p.owner.name}`}
                             >

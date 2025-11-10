@@ -1,6 +1,11 @@
 // src/components/products/ProductCard.jsx
-export default function ProductCard({ p, onEdit, onToggleVisible }) {
+import { chatsApi } from "../../services/chatsApi"; // 🔹 AGREGADO
+import useAuth from "../../store/authStore";        // 🔹 AGREGADO (para saber mi user.id)
+
+export default function ProductCard({ p, onEdit, onToggleVisible, showChat = false /* (opcional) onOpenChat */ }) {
   if (!p) return null;
+
+  const me = useAuth((s) => s.user); // { id, ... } o null
 
   // Obtiene la primera imagen (string o {id, url})
   const mainImage =
@@ -11,6 +16,31 @@ export default function ProductCard({ p, onEdit, onToggleVisible }) {
       : null;
 
   const open = () => onEdit && onEdit(p);
+
+  // Resolver IDs de forma robusta (por si cambia la forma en que llega p)
+  const productId = p?.id ?? p?.product_id ?? p?.product?.id ?? p?.item?.id;
+  const ownerId =
+    p?.owner_id ?? p?.owner?.id ?? p?.user_id ?? p?.seller_id ?? p?.ownerId;
+
+  // 🔹 Solo mostrar “Chatear” si así lo piden Y no es mi propio producto
+  const canShowChat = Boolean(showChat && ownerId && me?.id && Number(ownerId) !== Number(me.id));
+
+  // 🔹 AGREGADO: handler para abrir chat enviando product_id
+  const handleChat = async (e) => {
+    e.stopPropagation(); // evita abrir modal al presionar el botón
+    if (!ownerId) {
+      console.warn("ownerId vacío: no puedo abrir chat");
+      return;
+    }
+    try {
+      await chatsApi.openFromProduct(ownerId, productId);
+      // Si tu app tiene un dock o store de chat, puedes notificar aquí:
+      // onOpenChat?.(chat);
+      // window.dispatchEvent(new CustomEvent("chat:opened", { detail: chat }));
+    } catch (err) {
+      console.error("No se pudo abrir el chat:", err);
+    }
+  };
 
   return (
     <div
@@ -51,7 +81,7 @@ export default function ProductCard({ p, onEdit, onToggleVisible }) {
         <p className="text-sm font-semibold line-clamp-1">{p.title}</p>
         <p className="text-[11px] text-neutral-500 line-clamp-2">{p.description}</p>
 
-        <div className="mt-3 flex justify-between items-center">
+        <div className="mt-3 flex justify-between items-center gap-2">
           <button
             type="button"
             onClick={(e) => {
@@ -62,7 +92,18 @@ export default function ProductCard({ p, onEdit, onToggleVisible }) {
           >
             {p.visible ? "Ocultar" : "Mostrar"}
           </button>
-          {/* 🔹 Se eliminó el texto de ID */}
+
+          {/* 🔹 AGREGADO: botón Chatear (solo si aplica) */}
+          {canShowChat && (
+            <button
+              type="button"
+              onClick={handleChat}
+              className="text-[11px] rounded-lg bg-blue-600 text-white px-3 py-1 font-semibold hover:bg-blue-700 transition"
+            >
+              Chatear
+            </button>
+          )}
+          {/* 🔹 Fin botón agregado */}
         </div>
       </div>
     </div>

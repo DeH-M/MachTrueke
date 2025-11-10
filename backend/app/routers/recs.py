@@ -28,14 +28,26 @@ def excluded_ids(db: Session, uid: int, mode: str) -> set[int]:
 
 def baseline(db: Session, uid: int, exclude: set[int], limit: int = 200):
     """
-    Fallback por recencia de otros dueños. Útil cuando no hay perfil o KNN no trae nada.
+    Fallback por recencia de otros dueños, trayendo imágenes agregadas.
     """
     ex_sql = "AND p.id NOT IN :ids" if exclude else ""
+    # Agregamos LEFT JOIN a product_images y json_agg para regresar images []
     rows = db.execute(text(f"""
-        SELECT p.*, 0.0 AS sim_score
+        SELECT
+            p.*,
+            0.0 AS sim_score,
+            COALESCE(
+                json_agg(
+                    json_build_object('id', i.id, 'url', i.url)
+                    ORDER BY i.id
+                ) FILTER (WHERE i.id IS NOT NULL),
+                '[]'::json
+            ) AS images
         FROM public.products p
+        LEFT JOIN public.product_images i ON i.product_id = p.id
         WHERE p.owner_id != :uid
         {ex_sql}
+        GROUP BY p.id
         ORDER BY p.id DESC
         LIMIT :lim
     """), {
@@ -44,6 +56,47 @@ def baseline(db: Session, uid: int, exclude: set[int], limit: int = 200):
         "lim": limit
     }).mappings().all()
     return rows
+
+def fetch_images_for_ids(db: Session, ids: list[int]) -> dict[int, list[dict]]:
+    """
+    Obtiene imágenes para un conjunto de product_ids y regresa un mapa: {product_id: [ {id, url}, ... ]}.
+    """
+    if not ids:
+        return {}
+    rows = db.execute(text("""
+        SELECT
+            p.id AS product_id,
+            COALESCE(
+                json_agg(
+                    json_build_object('id', i.id, 'url', i.url)
+                    ORDER BY i.id
+                ) FILTER (WHERE i.id IS NOT NULL),
+                '[]'::json
+            ) AS images
+        FROM public.products p
+        LEFT JOIN public.product_images i ON i.product_id = p.id
+        WHERE p.id IN :ids
+        GROUP BY p.id
+    """), {"ids": tuple(ids)}).mappings().all()
+    return {r["product_id"]: r["images"] for r in rows}
+
+def enrich_with_images(db: Session, items: list[dict]) -> list[dict]:
+    """
+    Si algún item no trae 'images', las busca en batch y se las agrega.
+    Mantiene campos existentes (sim_score, etc.).
+    """
+    need = [int(it.get("id")) for it in items if not it.get("images")]
+    if not need:
+        return items
+    img_map = fetch_images_for_ids(db, need)
+    out = []
+    for it in items:
+        pid = int(it.get("id"))
+        if not it.get("images"):
+            it = dict(it)  # asegurar mutabilidad si viene como RowMapping
+            it["images"] = img_map.get(pid, [])
+        out.append(it)
+    return out
 
 def simple_dedupe(items, k: int = 30):
     """
@@ -99,7 +152,7 @@ def recs_home(
         except Exception:
             candidates = []
 
-    # 4) Fallback por recencia (mismo criterio de exclusión)
+    # 4) Fallback por recencia (mismo criterio de exclusión) con imágenes ya agregadas
     if not candidates:
         candidates = baseline(db, user.id, exclude=excl, limit=k)
 
@@ -107,7 +160,10 @@ def recs_home(
     if not candidates:
         candidates = baseline(db, user.id, exclude=set(), limit=k)
 
-    # 6) Deduplicación ligera y top-K final (30 sugerencias)
+    # 6) Si los candidatos del KNN no traen 'images', los enriquecemos en batch
+    candidates = enrich_with_images(db, list(candidates))
+
+    # 7) Deduplicación ligera y top-K final (30 sugerencias)
     ranked = simple_dedupe(candidates, k=30)
 
     return {"items": ranked}
