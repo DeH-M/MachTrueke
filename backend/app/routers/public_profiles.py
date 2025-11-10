@@ -6,6 +6,7 @@ from ..deps import get_db
 from ..models.user import User
 from ..models.product import Product  # ajusta si tu modelo está en otro path
 
+
 router = APIRouter(prefix="/api/public", tags=["public"])
 
 @router.get("/profile/{user_id}")
