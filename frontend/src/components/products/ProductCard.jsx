@@ -60,14 +60,16 @@ export default function ProductCard({ p, onToggleVisible, onEdit }) {
 
         <div className="mt-2">
           <button
+            type="button"
             onClick={(e) => {
               e.stopPropagation();
               onToggleVisible?.(p.id);
             }}
-            className="text-[11px] rounded bg-neutral-200 px-2 py-1 hover:bg-neutral-300"
+            className="text-[11px] rounded-lg bg-neutral-200 px-3 py-1 font-semibold hover:bg-neutral-300 transition"
           >
             {p.visible ? "Ocultar" : "Mostrar"}
           </button>
+          {/* 🔹 Se eliminó el texto de ID */}
         </div>
       </div>
     </div>

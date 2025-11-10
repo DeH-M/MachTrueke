@@ -9,24 +9,31 @@ import Signup from "../pages/Signup";
 import Home from "../pages/Home";
 import Likes from "../pages/Likes";
 
-// Perfil
+// Perfil privado (del usuario logueado)
 import Profile from "../pages/profile/Profile";
 import ProfileProducts from "../pages/profile/ProfileProducts";
 import ProfileSettings from "../pages/profile/ProfileSettings";
 
+// Perfil público (vendedor)
+import SellerProfile from "../pages/public/SellerProfile";
+
 import ChatDock from "../components/ChatDock";
+
 export default function AppRouter() {
   return (
     <>
-      {/* ...tus rutas/layouts... */}
+      {/* Componente flotante del chat */}
       <ChatDock />
     </>
   );
 }
 
+// ============================
+// 📍 Definición del enrutador
+// ============================
 
 export const router = createBrowserRouter([
-  // Páginas públicas (auth)
+  // --- Páginas públicas (sin autenticación) ---
   {
     element: <AuthLayout />,
     children: [
@@ -35,7 +42,15 @@ export const router = createBrowserRouter([
     ],
   },
 
-  // Páginas protegidas (requieren sesión)
+  // --- NUEVA RUTA: Perfil público del vendedor ---
+  {
+  element: <AppLayout />,           // ← envuelve rutas públicas con tu layout (header incluido)
+  children: [
+    { path: "/u/:id", element: <SellerProfile /> },
+  ],
+},
+
+  // --- Páginas protegidas (requieren sesión) ---
   {
     element: <ProtectedRoute />,
     children: [
@@ -45,7 +60,7 @@ export const router = createBrowserRouter([
           { path: "/", element: <Home /> },
           { path: "/likes", element: <Likes /> },
 
-          // Perfil y subrutas
+          // Perfil del usuario actual (privado)
           {
             path: "/profile",
             element: <Profile />,
@@ -60,6 +75,6 @@ export const router = createBrowserRouter([
     ],
   },
 
-  // 404 (opcional)
+  // --- Página 404 (opcional) ---
   { path: "*", element: <div style={{ padding: 24 }}>404: Página no encontrada</div> },
 ]);

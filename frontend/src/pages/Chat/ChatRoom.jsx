@@ -1,6 +1,7 @@
 // src/pages/chat/ChatRoom.jsx
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useChatRealtime } from "../../hooks/useChatRealtime";
+import { Link } from "react-router-dom"; // ← agregado
 
 const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
@@ -74,6 +75,15 @@ export default function ChatRoom({ chatId, peerId }) {
     <div className="p-4">
       <div className="mb-3 text-sm text-gray-500">
         roomId: {roomId || "(cargando...)"} · meId: {meId || "-"}
+        {peerId ? (
+          <Link
+            to={`/u/${peerId}`}              // ← enlace al perfil público
+            className="ml-3 text-blue-600 hover:underline"
+            title="Ver perfil del vendedor"
+          >
+            Ver perfil
+          </Link>
+        ) : null}
       </div>
 
       <div className="space-y-2">
