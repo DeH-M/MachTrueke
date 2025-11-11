@@ -22,7 +22,6 @@ from app.routers import auth, users, products, likes, chats, ai_admin
 from app.routers import events as events_router    # <-- NUEVO
 from app.routers import recs as recs_router        # <-- NUEVO
 from app.routers import health as health_router    # <-- NUEVO (/api/health/db)
-from app.routers.public_profiles import router as public_profiles_router
 
 # ─────────────────────────────────────────────────────────────
 # Crear app
@@ -72,7 +71,6 @@ app.include_router(likes.router, prefix="/likes", tags=["likes-compat"])
 # Chats (SIN prefix aquí si el router ya lo trae)
 app.include_router(chats.router)
 
-app.include_router(public_profiles_router)
 
 # (expone /api/ai/rebuild_embeddings)
 app.include_router(ai_admin.router, prefix="/api/ai", tags=["ai"])
@@ -157,7 +155,7 @@ async def cleanup_likes_loop(interval_seconds: int = 3600):
         # Salida limpia cuando Uvicorn hace reload o se apaga la app
         print("[CLEANUP] Tarea cancelada de forma segura.")
     except Exception as e:
-         # No tumbar la app si falla puntualmente
+        # No tumbar la app si falla puntualmente
         print("[CLEANUP ERROR]", e)
 
 @app.on_event("startup")

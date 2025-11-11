@@ -29,6 +29,19 @@ export const chatsApi = {
     return baseFetch(`/api/chats/open-with/${peerUserId}`, { method: "POST" });
   },
 
+  // 🔹 NUEVO: abrir chat indicando el producto de origen
+  // Envía peer_id y, si viene definido, product_id (para que el backend inserte el mensaje "viene del producto")
+  openFromProduct(peerUserId, productId) {
+    const body = {
+      peer_id: Number(peerUserId),
+      ...(productId != null ? { product_id: Number(productId) } : {}),
+    };
+    return baseFetch(`/api/chats/open`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+
   // Lista conversaciones del usuario actual
   listMyConversations() {
     return baseFetch(`/api/chats/me`, { method: "GET" });

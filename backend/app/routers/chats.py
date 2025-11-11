@@ -149,6 +149,93 @@ def _get_or_create_conversation(db: Session, me_id: int, peer_id: int) -> Conver
     return conv
 
 
+# =======================
+# NUEVO: helper para mensaje de origen de producto (sin tarjeta)
+# =======================
+def _send_origin_message_if_needed(
+    db: Session,
+    conv_id: int,
+    me_id: int,
+    product_id: Optional[int],
+):
+    """
+    Inserta un mensaje de origen cuando el chat se abre desde un producto.
+    - SIEMPRE que venga product_id, pero evita duplicados inmediatos
+      si el último mensaje ya es el mismo aviso.
+    """
+    if not product_id:
+        return None
+
+    # Trae el título del producto
+    row = db.execute(
+        text("SELECT title FROM public.products WHERE id = :pid"),
+        {"pid": int(product_id)},
+    ).mappings().first()
+    if not row:
+        return None
+
+    text_msg = f"¡Hola! 😊 Me interesa hacer un trueque por: {row['title']}"
+
+
+    # Anti-duplicado: si el último mensaje ya es idéntico, no lo repitas
+    last = (
+        db.query(Message)
+        .filter(Message.conversation_id == conv_id)
+        .order_by(Message.id.desc())
+        .first()
+    )
+    if last and (last.text or "") == text_msg:
+        return None
+
+    # Inserta mensaje normal de texto
+    m = Message(
+        conversation_id=conv_id,
+        sender_id=me_id,
+        type="text",
+        text=text_msg,
+        image_url=None,
+    )
+    db.add(m)
+    db.commit()
+    db.refresh(m)
+
+    # Broadcast WS (mismo mecanismo que ya usas)
+    parts = (
+        db.query(ConversationParticipant.user_id)
+        .filter(ConversationParticipant.conversation_id == conv_id)
+        .all()
+    )
+    uids = [p.user_id for p in parts]
+    peer_id = next((u for u in uids if u != me_id), me_id)
+    room_id = _room_id_for_users(me_id, peer_id, product_id=None)
+
+    payload = json.dumps({
+        "type": "message.created",
+        "chat_id": str(conv_id),
+        "message": {
+            "id": str(m.id),
+            "text": m.text,
+            "sender_id": me_id,
+            "from_me": True,
+            "type": "text",
+            "at": m.created_at.isoformat() if m.created_at else None,
+        },
+    })
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(manager.broadcast(room_id, payload))
+    except RuntimeError:
+        try:
+            anyio.from_thread.run(manager.broadcast, room_id, payload)
+        except TypeError:
+            manager.broadcast(room_id, payload)
+    except TypeError:
+        manager.broadcast(room_id, payload)
+
+    return m
+
+
 @router.get("", response_model=List[ChatRead])
 def list_threads(
     db: Session = Depends(get_db),
@@ -242,6 +329,14 @@ def open_thread(
 
     # --- NUEVO: busca/crea de verdad ---
     conv = _get_or_create_conversation(db, me.id, peer_id)
+
+    # --- NUEVO: inserta mensaje de origen si viene product_id (sin duplicar último) ---
+    _send_origin_message_if_needed(
+        db=db,
+        conv_id=conv.id,
+        me_id=me.id,
+        product_id=product_id,
+    )
 
     # Peer (para el resumen)
     peer: User = db.query(User).filter(User.id == peer_id).first()
@@ -428,6 +523,7 @@ def send_text(
         at=m.created_at,
     )
     # ------------------- FIN NUEVO -------------------
+
 
 @router.post("/{chat_id}/attachments", response_model=List[MessageRead])
 def send_attachments(
