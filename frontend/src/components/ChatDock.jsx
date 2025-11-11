@@ -1,7 +1,7 @@
 // src/components/ChatDock.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
-// ✅ NUEVO: import del componente de mini-tarjeta
-import MiniProductCard from "./products/MiniProductCard";
+import { uniqueById } from "../utils/uniqueById";
+
 
 /* ===========================
    Helpers HTTP (con token)
@@ -378,7 +378,7 @@ export default function ChatDock() {
         try {
           const created = await chatsApi.openThread({ peer_id: peerId, product_id });
           const normalized = normalizeThreads([created])[0];
-          setThreads((ts) => [normalized, ...ts]);
+          setThreads((ts) => uniqueById([normalized, ...ts]));
           thread = normalized;
         } catch (e) {
           alert(e.message || "No se pudo abrir el chat.");
@@ -544,13 +544,6 @@ function MiniChat({ thread, messages, text, setText, onClose, onSend, onPickFile
           <button className="text-neutral-500 hover:text-neutral-700" onClick={onClose} title="Cerrar">✕</button>
         </div>
       </div>
-
-      {/* ✅ NUEVO: Mini-tarjeta del producto arriba del timeline */}
-      {productId && (
-        <div className="px-3 pt-2">
-          <MiniProductCard productId={productId} />
-        </div>
-      )}
 
       {/* Mensajes */}
       <div ref={listRef} className="p-3 space-y-2 overflow-y-auto" style={{ maxHeight: 260 }}>
