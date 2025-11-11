@@ -119,6 +119,31 @@ export default function ChatDock() {
 
   const nowIso = () => new Date().toISOString();
 
+  /* ===== Unread helpers (PEGAR AQUÍ) ===== */
+
+// ¿El chat está abierto (acoplado)?
+const isThreadOpen = (id) => docked.includes(id);
+
+// Suma no leídos y actualiza el preview del último texto
+function bumpUnread(threadId, delta = 1, lastText = "") {
+  setThreads(prev => prev.map(t => {
+    if (t.id !== threadId) return t;
+    return {
+      ...t,
+      unread_count: (t.unread_count || 0) + delta,
+      last_message_text: lastText || t.last_message_text,
+    };
+  }));
+}
+
+// Marca leído (unread=0) y opcionalmente notifica al backend
+async function markThreadRead(threadId) {
+  setThreads(prev => prev.map(t => t.id === threadId ? { ...t, unread_count: 0 } : t));
+  try {
+    await baseFetch(`/api/chats/${threadId}/read`, { method: "POST" });
+  } catch { /* si tu backend no tiene /read, lo ignoramos */ }
+}
+
   /* -------- Cargar hilos al montar -------- */
   useEffect(() => {
     let alive = true;
@@ -161,6 +186,7 @@ export default function ChatDock() {
   const openChat = (threadId) => {
     setDocked((d) => (d.includes(threadId) ? d : [...d.slice(-2), threadId])); // máximo 3
     setListOpen(false);
+    markThreadRead(threadId); // ← nuevo
   };
   const closeChat = (threadId) => setDocked((d) => d.filter((x) => x !== threadId));
 
@@ -238,13 +264,27 @@ export default function ChatDock() {
           });
 
           if (news.length) {
-            setMsgsByThread((m) => ({ ...m, [id]: [...(m[id] || []), ...news] }));
-            const last = getLastId(data);
-            if (last != null) lastIdByThread.current[id] = String(last); // 🔹 avanza puntero
-          }
-        } catch {
-          // ignoramos errores de polling
-        }
+          // Si el chat NO está abierto, sumar unread por cada mensaje del otro
+              if (!isThreadOpen(id)) {
+                  const rec = news.filter(x => !x.from_me);
+                  if (rec.length) {
+                      const lastText = rec[rec.length - 1].text || "";
+                      bumpUnread(id, rec.length, lastText);
+                  }
+              } else {
+                // Si está abierto y llega algo del otro, marcar leído
+                const cameFromOther = news.some(x => !x.from_me);
+                if (cameFromOther) markThreadRead(id);
+              }
+
+              // Actualiza mensajes y puntero
+              setMsgsByThread((m) => ({ ...m, [id]: [...(m[id] || []), ...news] }));
+              const last = getLastId(data);
+              if (last != null) lastIdByThread.current[id] = String(last); // 🔹 avanza puntero
+            }           
+            } catch {
+             // ignoramos errores de polling
+            }
       }
     }, 5000);
     return () => clearInterval(iv);
@@ -257,47 +297,64 @@ export default function ChatDock() {
     setInputs((s) => ({ ...s, [threadId]: "" }));
 
     // Optimista
-    const temp = {
-      id: `tmp-${Date.now()}`,
-      from_me: true,
-      type: "text",
-      text: val,
-      at: nowIso(),
-    };
+const temp = {
+  id: `tmp-${Date.now()}`,
+  from_me: true,
+  type: "text",
+  text: val,
+  at: nowIso(),
+  status: "sending",
+};
 
-    // 🔹 Registra id temporal para que no choque con deduplicación futura
-    if (!seenIdsRef.current[threadId]) seenIdsRef.current[threadId] = new Set();
-    seenIdsRef.current[threadId].add(temp.id);
+// dedupe (ids temporales)
+if (!seenIdsRef.current[threadId]) seenIdsRef.current[threadId] = new Set();
+seenIdsRef.current[threadId].add(temp.id);
 
-    setMsgsByThread((m) => ({ ...m, [threadId]: [...(m[threadId] || []), temp] }));
+// pinta el mensaje en la burbuja
+setMsgsByThread(m => ({ ...m, [threadId]: [...(m[threadId] || []), temp] }));
 
-    try {
-      const saved = await chatsApi.sendText(threadId, val);
-      const normalized = normalizeMessages([saved])[0] || temp;
+// PREVIEW INMEDIATO (sin normalized todavía)
+setThreads(prev => prev.map(t => t.id === threadId ? {
+  ...t,
+  last_message_text: val,
+  unread_count: 0,
+} : t));
 
-      // 🔹 actualiza set de ids con el id real
-      const setIds = seenIdsRef.current[threadId];
-      setIds.add(normalized.id);
+try {
+  const saved = await chatsApi.sendText(threadId, val);
+  const normalized = normalizeMessages([saved])[0] || temp;
+  normalized.status = "delivered";
 
-      // Reemplazar temporal por saved
-      setMsgsByThread((m) => ({
-        ...m,
-        [threadId]: (m[threadId] || []).map((msg) => (msg.id === temp.id ? normalized : msg)),
-      }));
+  // dedupe: registra id real
+  const setIds = seenIdsRef.current[threadId];
+  setIds.add(normalized.id);
 
-      // 🔹 avanza último ID
-      lastIdByThread.current[threadId] = String(normalized.id);
-    } catch (e) {
-      // revertir optimista si falla
-      setMsgsByThread((m) => ({
-        ...m,
-        [threadId]: (m[threadId] || []).filter((msg) => msg.id !== temp.id),
-      }));
-      // quita temp del set
-      seenIdsRef.current[threadId]?.delete(temp.id);
-      alert(e.message || "No se pudo enviar el mensaje.");
-    }
-  };
+  // reemplaza temporal por el real
+  setMsgsByThread(m => ({
+    ...m,
+    [threadId]: (m[threadId] || []).map(msg => (msg.id === temp.id ? normalized : msg)),
+  }));
+
+  // PREVIEW FINAL (ya con texto confirmado del backend)
+  setThreads(prev => prev.map(t => t.id === threadId ? {
+    ...t,
+    last_message_text: normalized.text || t.last_message_text,
+    unread_count: 0,
+  } : t));
+
+  lastIdByThread.current[threadId] = String(normalized.id);
+} catch (e) {
+  // revertir optimista si falla
+  setMsgsByThread(m => ({
+    ...m,
+    [threadId]: (m[threadId] || []).filter(msg => msg.id !== temp.id),
+  }));
+  seenIdsRef.current[threadId]?.delete(temp.id);
+  alert(e.message || "No se pudo enviar el mensaje.");
+}
+
+
+  }
 
   /* -------- Enviar imágenes -------- */
   const attachImage = async (threadId, files) => {
@@ -374,17 +431,19 @@ export default function ChatDock() {
 
 
       // Si no existe, pídeselo al backend
+      // Si no existe, pídeselo al backend
       if (!thread) {
-        try {
+      try {
           const created = await chatsApi.openThread({ peer_id: peerId, product_id });
-          const normalized = normalizeThreads([created])[0];
-          setThreads((ts) => uniqueById([normalized, ...ts]));
-          thread = normalized;
-        } catch (e) {
+          const normalized = normalizeThreads([created])[0];   // ← declarado aquí
+          setThreads(ts => uniqueById([normalized, ...ts]));   // ← uso aquí
+          thread = normalized;                                 // ← y aquí
+      } catch (e) {
           alert(e.message || "No se pudo abrir el chat.");
           return;
         }
       }
+
 
       openChat(thread.id);
       // si no tenemos aún sus mensajes, los traerá el effect de docked
@@ -453,11 +512,20 @@ export default function ChatDock() {
                         className="h-9 w-9 rounded-full object-cover ring-1 ring-black/5"
                       />
                       <div className="min-w-0 text-left flex-1">
-                        <p className="text-sm font-semibold truncate">
-                          {/* 👇 mostramos username si existe; si no, name */}
+                        <p
+                          className={`text-sm truncate ${
+                              t.unread_count ? "font-extrabold" : "font-semibold"
+                          }`}
+                        >
                           {t.peer?.username || t.peer?.name || "Usuario"}
                         </p>
-                        <p className="text-[11px] text-neutral-500 truncate">{t.last_message_text || "…"}</p>
+                        <p
+                          className={`text-[11px] truncate ${
+                            t.unread_count ? "text-blue-700" : "text-neutral-500"
+                          }`}
+                        >
+                          {t.last_message_text || "…"}
+                        </p>
                       </div>
                       {!!t.unread_count && (
                         <span className="ml-2 text-[11px] px-2 py-0.5 rounded-full bg-blue-600 text-white">
@@ -515,7 +583,7 @@ function MiniChat({ thread, messages, text, setText, onClose, onSend, onPickFile
 
   if (!thread) return null;
 
-  // ✅ NUEVO: id de producto del hilo (si viene del backend o al abrirlo)
+  // (opcional) por si lo usas en otro lado
   const productId = thread.product_id || null;
 
   return (
@@ -529,7 +597,6 @@ function MiniChat({ thread, messages, text, setText, onClose, onSend, onPickFile
             className="h-6 w-6 rounded-full object-cover ring-1 ring-black/5"
           />
           <p className="text-sm font-semibold truncate">
-            {/* 👇 username si existe; si no, nombre */}
             {thread.peer?.username || thread.peer?.name || "Usuario"}
           </p>
         </div>
@@ -551,12 +618,24 @@ function MiniChat({ thread, messages, text, setText, onClose, onSend, onPickFile
           m.type === "image" ? (
             <Bubble key={m.id} mine={m.from_me}>
               <img src={m.url} alt={m.name || "imagen"} className="max-h-40 rounded-lg object-cover" />
-              <Time mine={m.from_me}>{fmtTime(m.at)}</Time>
+              <Time mine={m.from_me}>
+                {m.from_me
+                  ? (m.status === "sending" ? "enviando…" :
+                      m.status === "error"   ? "error" :
+                      fmtTime(m.at))
+                  : fmtTime(m.at)}
+              </Time>
             </Bubble>
           ) : (
             <Bubble key={m.id} mine={m.from_me}>
               {m.text}
-              <Time mine={m.from_me}>{fmtTime(m.at)}</Time>
+              <Time mine={m.from_me}>
+                {m.from_me
+                  ? (m.status === "sending" ? "enviando…" :
+                      m.status === "error"   ? "error" :
+                      fmtTime(m.at))
+                  : fmtTime(m.at)}
+              </Time>
             </Bubble>
           )
         )}
