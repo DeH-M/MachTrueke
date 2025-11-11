@@ -47,7 +47,7 @@ function toCard(p) {
     images: imageUrls,
     owner: p.owner ?? null,
     owner_id: p.owner_id ?? null,
-    sim_score: typeof p.sim_score === "number" ? p.sim_score : undefined,
+    sim_score: typeof p.sim_score === "number" ? p.sim_score : undefined, // (no se muestra)
   };
 }
 
@@ -303,11 +303,7 @@ export default function Home() {
                 <div className="p-4 space-y-2">
                   <h2 className="text-lg font-bold">{card.title}</h2>
                   <p className="text-sm text-neutral-600">{card.description}</p>
-                  {typeof card.sim_score === "number" && (
-                    <div className="text-[11px] text-neutral-500">
-                      score: {card.sim_score.toFixed(3)}
-                    </div>
-                  )}
+
                   {card.owner && (
                     <div className="flex items-center gap-2 mt-2">
                       <img
@@ -340,18 +336,6 @@ export default function Home() {
             <p className="text-[11px] text-neutral-500 mt-2 text-center">
               Desliza a la derecha para hacer match, a la izquierda para rechazar (teclas → / ← también).
             </p>
-
-            {/* Botón de depuración opcional */}
-            <button
-              onClick={() => {
-                const s = new Set();
-                setHiddenIds(s);
-                saveHidden(s);
-              }}
-              className="mt-3 text-[11px] underline text-neutral-400"
-            >
-              Limpiar ocultos (debug)
-            </button>
           </div>
         )}
       </div>
