@@ -44,9 +44,13 @@ export default function SellerProfile() {
   }, [id]);
 
   const openDockChat = (userId) => {
-    if (!userId) return;
-    window.dispatchEvent(new CustomEvent("open-chat", { detail: { id: userId } }));
-  };
+  if (!userId) return;
+  window.dispatchEvent(
+    new CustomEvent("open-chat", {
+      detail: { peer: { id: String(userId) } },
+    })
+  );
+};
 
   /* Skeleton */
   if (loading) {

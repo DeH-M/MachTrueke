@@ -1,5 +1,7 @@
 // src/components/ChatDock.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
+// ✅ NUEVO: import del componente de mini-tarjeta
+import MiniProductCard from "./products/MiniProductCard";
 
 /* ===========================
    Helpers HTTP (con token)
@@ -8,7 +10,6 @@ const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 
 // NUEVO: convierte rutas relativas ("/media/...") en absolutas
 const absUrl = (u) => (u ? (u.startsWith("http") ? u : `${API_URL}${u}`) : "");
-
 
 async function baseFetch(path, options = {}) {
   const token = localStorage.getItem("token");
@@ -359,6 +360,18 @@ export default function ChatDock() {
       // ¿Ya existe un hilo con ese peer?
       let thread =
         threads.find((t) => t.peer?.id === String(peerId) && (product_id ? t.product_id === product_id : true));
+      
+        // 🟡 INYECTAR product_id si ya existe un hilo con el peer PERO SIN product_id
+      if (!thread) {
+        const samePeer = threads.find((t) => t.peer?.id === String(peerId));
+        if (samePeer && product_id && !samePeer.product_id) {
+          setThreads((ts) =>
+            ts.map((t) => (t.id === samePeer.id ? { ...t, product_id } : t))
+        );
+        thread = { ...samePeer, product_id };
+        }
+      }
+
 
       // Si no existe, pídeselo al backend
       if (!thread) {
@@ -502,6 +515,9 @@ function MiniChat({ thread, messages, text, setText, onClose, onSend, onPickFile
 
   if (!thread) return null;
 
+  // ✅ NUEVO: id de producto del hilo (si viene del backend o al abrirlo)
+  const productId = thread.product_id || null;
+
   return (
     <div className="w-72 max-w-[90vw] rounded-2xl bg-white/90 backdrop-blur-sm ring-1 ring-black/5 shadow-xl overflow-hidden flex flex-col">
       {/* Header */}
@@ -528,6 +544,13 @@ function MiniChat({ thread, messages, text, setText, onClose, onSend, onPickFile
           <button className="text-neutral-500 hover:text-neutral-700" onClick={onClose} title="Cerrar">✕</button>
         </div>
       </div>
+
+      {/* ✅ NUEVO: Mini-tarjeta del producto arriba del timeline */}
+      {productId && (
+        <div className="px-3 pt-2">
+          <MiniProductCard productId={productId} />
+        </div>
+      )}
 
       {/* Mensajes */}
       <div ref={listRef} className="p-3 space-y-2 overflow-y-auto" style={{ maxHeight: 260 }}>
